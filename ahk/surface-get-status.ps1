@@ -40,10 +40,11 @@ function Wait-For([scriptblock]$test, [int]$timeoutMs = 10000, [int]$pollMs = 10
     return $null
 }
 
-$proc = $null
-$launchedByUs = $false
+function Invoke-GetStatus {
+    $proc = $null
+    $launchedByUs = $false
 
-try {
+    try {
     # Always close any existing Surface app instance and relaunch fresh
     # so we land on the home page where the Battery & charging card lives.
     $proc = Find-SurfaceProcess
@@ -122,21 +123,21 @@ try {
         }
     }
 
-    $modeKey = switch ($selectedMode) {
+    $script:modeKey = switch ($selectedMode) {
         'Adaptive'        { 'adaptive' }
         'Limit to 80%'    { '80' }
         'Charge to 100%'  { '100' }
         default           { $null }
     }
-    $durKey = switch ($selectedDuration) {
+    $script:durKey = switch ($selectedDuration) {
         '1 day'   { '1day' }
         '1 week'  { '1week' }
         default   { $null }
     }
 
     $state = [PSCustomObject]@{
-        Mode      = $modeKey
-        Duration  = if ($modeKey -eq '100') { $durKey } else { $null }
+        Mode      = $script:modeKey
+        Duration  = if ($script:modeKey -eq '100') { $script:durKey } else { $null }
         Timestamp = (Get-Date).ToString('s')
     }
     $cachePath = Join-Path $PSScriptRoot 'surface-state.json'
@@ -150,18 +151,33 @@ try {
         } catch { }
     }
 
-    if (Test-Path $errorLog) { Remove-Item $errorLog -Force }
-
-    Write-Host "Mode=$modeKey Duration=$durKey"
-}
-catch {
-    $_.Exception.Message | Out-File $errorLog -Encoding utf8 -NoNewline
-    Write-Host $_.Exception.Message
-    if ($launchedByUs -and $proc) {
-        try {
-            $proc.CloseMainWindow() | Out-Null
-            if (-not $proc.WaitForExit(2000)) { $proc.Kill() }
-        } catch { }
+    return $null  # success
     }
+    catch {
+        if ($launchedByUs -and $proc) {
+            try {
+                $proc.CloseMainWindow() | Out-Null
+                if (-not $proc.WaitForExit(2000)) { $proc.Kill() }
+            } catch { }
+        }
+        return $_.Exception.Message
+    }
+}
+
+# Run once. Retry once on transient activation/UIA failures.
+$script:modeKey = $null
+$script:durKey  = $null
+$result = Invoke-GetStatus
+if ($result -and ($result -match 'Battery & charging' -or $result -match 'UI Automation')) {
+    Start-Sleep -Milliseconds 500
+    $result = Invoke-GetStatus
+}
+
+if ($result) {
+    $result | Out-File $errorLog -Encoding utf8 -NoNewline
+    Write-Host $result
     exit 1
 }
+
+if (Test-Path $errorLog) { Remove-Item $errorLog -Force }
+Write-Host "Mode=$($script:modeKey) Duration=$($script:durKey)"

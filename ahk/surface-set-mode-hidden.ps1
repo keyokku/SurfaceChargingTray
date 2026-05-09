@@ -48,10 +48,11 @@ function Wait-For([scriptblock]$test, [int]$timeoutMs = 10000, [int]$pollMs = 10
     return $null
 }
 
-$proc = $null
-$launchedByUs = $false
+function Invoke-SetMode {
+    $proc = $null
+    $launchedByUs = $false
 
-try {
+    try {
     # If the Surface app is already running, close it first. The user
     # could be on any page (Device info, Help, etc.) where the
     # Battery & charging card isn't in the UI Automation tree, which would
@@ -181,19 +182,36 @@ try {
         if (-not $proc.WaitForExit(2000)) { $proc.Kill() }
     } catch { }
 
-    if (Test-Path $errorLog) { Remove-Item $errorLog -Force }
-
-    $durStr = if ($Mode -eq '100') { " ($Duration)" } else { '' }
-    Write-Host "Done. Mode=$Mode$durStr"
-}
-catch {
-    $_.Exception.Message | Out-File $errorLog -Encoding utf8 -NoNewline
-    Write-Host $_.Exception.Message
-    if ($launchedByUs -and $proc) {
-        try {
-            $proc.CloseMainWindow() | Out-Null
-            if (-not $proc.WaitForExit(2000)) { $proc.Kill() }
-        } catch { }
+    return $null  # success
     }
+    catch {
+        if ($launchedByUs -and $proc) {
+            try {
+                $proc.CloseMainWindow() | Out-Null
+                if (-not $proc.WaitForExit(2000)) { $proc.Kill() }
+            } catch { }
+        }
+        return $_.Exception.Message
+    }
+}
+
+# Run once. On a transient activation/UIA failure, retry once after a
+# short pause — these usually clear up if the system was momentarily
+# busy (e.g. right after the user closed Settings, or focus was still
+# settling).
+$result = Invoke-SetMode
+if ($result -and ($result -match 'Battery & charging' -or $result -match 'UI Automation')) {
+    Start-Sleep -Milliseconds 500
+    $result = Invoke-SetMode
+}
+
+if ($result) {
+    $result | Out-File $errorLog -Encoding utf8 -NoNewline
+    Write-Host $result
     exit 1
 }
+
+if (Test-Path $errorLog) { Remove-Item $errorLog -Force }
+
+$durStr = if ($Mode -eq '100') { " ($Duration)" } else { '' }
+Write-Host "Done. Mode=$Mode$durStr"
