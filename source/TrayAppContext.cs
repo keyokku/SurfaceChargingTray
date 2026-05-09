@@ -10,6 +10,18 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly HotkeyManager _hotkeys = new();
     private readonly SynchronizationContext _ui;
 
+    // Icons + bitmap loaded once and re-used. Re-creating them every theme
+    // tick (5s) leaks HICON / HBITMAP handles until the next GC cycle and
+    // drifts working set up over long uptimes.
+    private readonly System.Drawing.Icon   _iconWhite;
+    private readonly System.Drawing.Icon   _iconBlack;
+    private readonly System.Drawing.Bitmap _errorBitmap;
+
+    // Last theme we actually pushed; lets the timer no-op when nothing
+    // changed (the common case).
+    private bool? _appliedSystemDark;
+    private bool? _appliedAppsDark;
+
     private SettingsModel _settings;
     private string _lastError = "";
     private bool _busy = false;
@@ -29,6 +41,15 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
         _settings = SettingsModel.Load();
+
+        // Cache icons once. Each Icon owns a native HICON; allocating fresh
+        // ones every 5 seconds previously bled handles until GC ran.
+        _iconWhite = Icons.PlugWhite();
+        _iconBlack = Icons.PlugBlack();
+        // ToBitmap() copies the pixels into a managed Bitmap. We dispose
+        // the source Icon immediately so its HICON is released right away.
+        using (var ico = Icons.ErrorRed())
+            _errorBitmap = ico.ToBitmap();
 
         // Detect the installed Surface app's AUMID dynamically. Always
         // returns something; persists to settings.ini.
@@ -61,7 +82,7 @@ internal sealed class TrayAppContext : ApplicationContext
         };
 
         ApplyTrayIcon();
-        DarkMenu.ApplyTo(_menu);
+        ApplyMenuTheme();
         UpdateMenuFromCache();
         UpdateAutoStartCheck();
         ApplyHotkeys();
@@ -70,7 +91,7 @@ internal sealed class TrayAppContext : ApplicationContext
         _themeTimer.Tick += (s, e) =>
         {
             ApplyTrayIcon();
-            DarkMenu.ApplyTo(_menu);
+            ApplyMenuTheme();
         };
         _themeTimer.Start();
     }
@@ -119,13 +140,16 @@ internal sealed class TrayAppContext : ApplicationContext
     {
         _lastError = msg;
         _icon.Text = ClampTooltip("Surface Charging: ERROR — right-click 'Show last error'");
-        try { _miShowError.Image = Icons.ErrorRed().ToBitmap(); } catch { }
+        // Reuse the cached error bitmap; never re-allocate.
+        try { _miShowError.Image = _errorBitmap; } catch { }
         _icon.ShowBalloonTip(5000, "Surface charging tray", msg.Length > 200 ? msg[..200] : msg, ToolTipIcon.Error);
     }
 
     private void ClearError()
     {
         _lastError = "";
+        // Don't dispose _errorBitmap — it's a cached resource we may need
+        // again. Just unlink it from the menu item.
         try { _miShowError.Image = null; } catch { }
     }
 
@@ -143,11 +167,19 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void ApplyTrayIcon()
     {
-        try
-        {
-            _icon.Icon = DarkMode.IsSystemDarkMode() ? Icons.PlugWhite() : Icons.PlugBlack();
-        }
+        bool dark = DarkMode.IsSystemDarkMode();
+        if (_appliedSystemDark == dark) return;   // no theme change since last tick
+        _appliedSystemDark = dark;
+        try { _icon.Icon = dark ? _iconWhite : _iconBlack; }
         catch { }
+    }
+
+    private void ApplyMenuTheme()
+    {
+        bool dark = DarkMode.IsAppsDarkMode();
+        if (_appliedAppsDark == dark) return;
+        _appliedAppsDark = dark;
+        DarkMenu.ApplyTo(_menu);
     }
 
     private void UpdateMenuFromCache()
@@ -270,9 +302,14 @@ internal sealed class TrayAppContext : ApplicationContext
             _themeTimer.Stop();
             _themeTimer.Dispose();
             _hotkeys.Dispose();
+            // Drop the icon reference before disposing _icon's source bitmaps,
+            // so NotifyIcon doesn't hold a dangling pointer.
             _icon.Visible = false;
             _icon.Dispose();
             _menu.Dispose();
+            _iconWhite.Dispose();
+            _iconBlack.Dispose();
+            _errorBitmap.Dispose();
         }
         base.Dispose(disposing);
     }

@@ -33,9 +33,10 @@ internal static class SurfaceController
         {
             (proc, launchedByUs) = AcquireSurfaceWindow();
 
+            var localProc = proc;  // for capture in lambda; appeases nullable analysis
             var win = WaitFor(() =>
                 {
-                    try { return AutomationElement.FromHandle(proc.MainWindowHandle); }
+                    try { return AutomationElement.FromHandle(localProc.MainWindowHandle); }
                     catch { return null; }
                 }, 5000);
             if (win == null) throw new Exception("Could not bind UI Automation to the Surface window.");
@@ -75,15 +76,25 @@ internal static class SurfaceController
 
             Thread.Sleep(200);
             CloseProc(proc);
+            proc = null;  // CloseProc disposed it; don't double-dispose in finally
 
             ClearError();
             return null;
         }
         catch (Exception ex)
         {
-            if (launchedByUs && proc != null) TryCloseQuiet(proc);
+            if (launchedByUs && proc != null)
+            {
+                TryCloseQuiet(proc);
+                proc = null;
+            }
             WriteError(ex.Message);
             return ex.Message;
+        }
+        finally
+        {
+            // Safety net for any path that didn't already close+dispose.
+            proc?.Dispose();
         }
     }
 
@@ -161,6 +172,7 @@ internal static class SurfaceController
             {
                 Thread.Sleep(200);
                 CloseProc(proc);
+                proc = null;
             }
 
             ClearError();
@@ -168,9 +180,17 @@ internal static class SurfaceController
         }
         catch (Exception ex)
         {
-            if (launchedByUs && proc != null) TryCloseQuiet(proc);
+            if (launchedByUs && proc != null)
+            {
+                TryCloseQuiet(proc);
+                proc = null;
+            }
             WriteError(ex.Message);
             return ex.Message;
+        }
+        finally
+        {
+            proc?.Dispose();
         }
     }
 
@@ -192,6 +212,7 @@ internal static class SurfaceController
                 if (!existing.WaitForExit(2500)) existing.Kill();
             }
             catch { }
+            existing.Dispose();
             // Brief pause to let the package's process fully tear down before
             // we trigger a re-activation; otherwise the new launch sometimes
             // attaches to the dying instance.
@@ -214,12 +235,33 @@ internal static class SurfaceController
         throw new Exception("Surface app didn't launch within 10 seconds. Is the Surface app installed and working?");
     }
 
-    private static Process? FindSurface() =>
-        Process.GetProcesses().FirstOrDefault(p =>
+    /// <summary>
+    /// Finds the running Surface app process (or null). Disposes every
+    /// non-matching <see cref="Process"/> that <c>Process.GetProcesses</c>
+    /// returned, so we don't leak handles for the dozens of unrelated
+    /// processes the enumeration also includes.
+    /// </summary>
+    private static Process? FindSurface()
+    {
+        Process? match = null;
+        foreach (var p in Process.GetProcesses())
         {
-            try { return p.MainWindowTitle == "Surface" && p.MainWindowHandle != IntPtr.Zero; }
-            catch { return false; }
-        });
+            if (match == null)
+            {
+                try
+                {
+                    if (p.MainWindowTitle == "Surface" && p.MainWindowHandle != IntPtr.Zero)
+                    {
+                        match = p;
+                        continue;  // keep alive, skip Dispose
+                    }
+                }
+                catch { }
+            }
+            p.Dispose();
+        }
+        return match;
+    }
 
     private static void HideWindow(IntPtr h)
     {
@@ -290,6 +332,7 @@ internal static class SurfaceController
             if (!p.WaitForExit(2000)) p.Kill();
         }
         catch { }
+        p.Dispose();
     }
 
     private static void TryCloseQuiet(Process p)
@@ -300,6 +343,7 @@ internal static class SurfaceController
             if (!p.WaitForExit(1500)) p.Kill();
         }
         catch { }
+        p.Dispose();
     }
 
     private static T? WaitFor<T>(Func<T?> probe, int timeoutMs, int pollMs = 100) where T : class

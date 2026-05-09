@@ -62,18 +62,24 @@ internal class DarkMenuRenderer : ToolStripProfessionalRenderer
 
 internal static class DarkMenu
 {
+    // Renderers are stateless and reusable — instantiate once and assign
+    // by reference instead of allocating a new renderer + color table on
+    // every theme tick.
+    private static readonly DarkMenuRenderer              DarkRenderer  = new();
+    private static readonly ToolStripProfessionalRenderer LightRenderer = new();
+
     /// <summary>Apply the appropriate renderer to a ContextMenuStrip based on Windows apps theme.</summary>
     public static void ApplyTo(ContextMenuStrip menu)
     {
         if (DarkMode.IsAppsDarkMode())
         {
-            menu.Renderer  = new DarkMenuRenderer();
+            menu.Renderer  = DarkRenderer;
             menu.BackColor = Color.FromArgb(0x1F, 0x1F, 0x1F);
             menu.ForeColor = Color.White;
         }
         else
         {
-            menu.Renderer = new ToolStripProfessionalRenderer();
+            menu.Renderer  = LightRenderer;
             menu.BackColor = SystemColors.Menu;
             menu.ForeColor = SystemColors.MenuText;
         }
