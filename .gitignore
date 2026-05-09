@@ -1,0 +1,26 @@
+# Build artifacts
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+.vs/
+.idea/
+*.pdb
+*.dll
+
+# Published distribution output (binaries are uploaded to GitHub Releases,
+# not committed to the repo).
+dist/
+
+# Runtime files the program creates next to itself.
+settings.ini
+surface-state.json
+surface-error.log
+crash.log
+
+# OS noise
+Thumbs.db
+*.lnk
+desktop.ini
