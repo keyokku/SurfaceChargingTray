@@ -9,6 +9,10 @@ internal sealed class TrayAppContext : ApplicationContext
     [DllImport("psapi.dll")]
     private static extern bool EmptyWorkingSet(IntPtr hProcess);
 
+    [DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(uint dwProcessId);
+    private const uint ASFW_ANY = 0xFFFFFFFF;
+
     /// <summary>
     /// Asks Windows to release as many physical pages as possible from this
     /// process's working set. Our committed memory doesn't change — pages
@@ -295,16 +299,34 @@ internal sealed class TrayAppContext : ApplicationContext
 
     // ---- Hotkeys -------------------------------------------------------
 
+    /// <summary>
+    /// Hotkey callbacks run inside the WM_HOTKEY WndProc, which is the
+    /// brief window during which Windows considers our process as having
+    /// "received user input" and therefore eligible to set foreground.
+    /// We immediately grant that privilege to ANY process so that the
+    /// later UwpLauncher.Launch call (which runs on a background Task
+    /// thread, well after our foreground rights would normally have
+    /// expired) can still bring the Surface app up properly. Without this
+    /// the Surface app activates in a deferred / underprivileged state
+    /// and its UIA tree never finishes populating before our search
+    /// times out.
+    /// </summary>
+    private void HotkeyTriggered(Action onUiThread)
+    {
+        AllowSetForegroundWindow(ASFW_ANY);
+        _ui.Post(_ => onUiThread(), null);
+    }
+
     private void ApplyHotkeys()
     {
         _hotkeys.Clear();
         var actionMap = new Dictionary<string, Action>
         {
-            { "adaptive",  () => _ui.Post(_ => StartSetMode("adaptive"), null)         },
-            { "80",        () => _ui.Post(_ => StartSetMode("80"), null)               },
-            { "100-1day",  () => _ui.Post(_ => StartSetMode("100", "1day"), null)      },
-            { "100-1week", () => _ui.Post(_ => StartSetMode("100", "1week"), null)     },
-            { "cycle",     () => _ui.Post(_ => CycleMode(), null)                      }
+            { "adaptive",  () => HotkeyTriggered(() => StartSetMode("adaptive"))         },
+            { "80",        () => HotkeyTriggered(() => StartSetMode("80"))               },
+            { "100-1day",  () => HotkeyTriggered(() => StartSetMode("100", "1day"))      },
+            { "100-1week", () => HotkeyTriggered(() => StartSetMode("100", "1week"))     },
+            { "cycle",     () => HotkeyTriggered(() => CycleMode())                      }
         };
         var failures = new List<string>();
         foreach (var (action, h) in _settings.Hotkeys)

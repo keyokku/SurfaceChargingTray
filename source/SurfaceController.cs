@@ -23,10 +23,31 @@ internal static class SurfaceController
     [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(uint dwProcessId);
 
     /// <summary>
+    /// Errors from the inner attempt that should be retried automatically.
+    /// Both happen when we briefly catch the Surface app in a transient
+    /// activation state — most often right after the user changed Settings,
+    /// or when system focus is still settling after a UI event.
+    /// </summary>
+    private static bool IsTransient(string? msg) =>
+        msg != null && (msg.Contains("Battery & charging") || msg.Contains("UI Automation"));
+
+    /// <summary>
     /// Switches the Surface app to the given mode.
     /// Returns null on success, an error message on failure.
+    /// Retries once on transient failures.
     /// </summary>
     public static string? SetMode(string mode, string? duration)
+    {
+        var err = SetModeOnce(mode, duration);
+        if (IsTransient(err))
+        {
+            Thread.Sleep(500);
+            err = SetModeOnce(mode, duration);
+        }
+        return err;
+    }
+
+    private static string? SetModeOnce(string mode, string? duration)
     {
         Process? proc = null;
         bool launchedByUs = false;
@@ -100,8 +121,22 @@ internal static class SurfaceController
         }
     }
 
-    /// <summary>Reads the current mode from the Surface app and updates the cache.</summary>
+    /// <summary>
+    /// Reads the current mode from the Surface app and updates the cache.
+    /// Retries once on transient failures.
+    /// </summary>
     public static string? RefreshState()
+    {
+        var err = RefreshStateOnce();
+        if (IsTransient(err))
+        {
+            Thread.Sleep(500);
+            err = RefreshStateOnce();
+        }
+        return err;
+    }
+
+    private static string? RefreshStateOnce()
     {
         Process? proc = null;
         bool launchedByUs = false;
