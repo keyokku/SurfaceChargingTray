@@ -24,3 +24,6 @@ crash.log
 Thumbs.db
 *.lnk
 desktop.ini
+
+# Local release packaging output
+release-staging/
