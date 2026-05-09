@@ -16,9 +16,11 @@ internal static class SurfaceController
     private const uint SWP_NOSIZE     = 0x0001;
     private const uint SWP_NOZORDER   = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint ASFW_ANY       = 0xFFFFFFFF;
 
     [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr h, int n);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(uint dwProcessId);
 
     /// <summary>
     /// Switches the Surface app to the given mode.
@@ -42,7 +44,7 @@ internal static class SurfaceController
             if (win == null) throw new Exception("Could not bind UI Automation to the Surface window.");
 
             var bcGroup = WaitFor(() => win.FindFirst(TreeScope.Subtree,
-                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 10000, 200);
+                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 15000, 200);
             if (bcGroup == null)
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
 
@@ -112,7 +114,7 @@ internal static class SurfaceController
                 ?? throw new Exception("Could not bind UI Automation to the Surface window.");
 
             var bcGroup = WaitFor(() => win.FindFirst(TreeScope.Subtree,
-                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 10000, 200);
+                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 15000, 200);
             if (bcGroup == null)
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
 
@@ -219,6 +221,15 @@ internal static class SurfaceController
             Thread.Sleep(300);
         }
 
+        // Grant foreground rights to the activation target. Without this,
+        // when a global hotkey triggers SetMode our process isn't actually
+        // in the foreground, Windows refuses to let the new app fully
+        // activate, and the Surface app launches into an underpopulated
+        // state where the Battery & charging UIA tree never finishes
+        // building. (Tray-menu clicks don't hit this because the menu
+        // implicitly puts our process in the foreground.)
+        AllowSetForegroundWindow(ASFW_ANY);
+
         UwpLauncher.Launch(Aumid);
 
         var deadline = DateTime.Now.AddSeconds(10);
@@ -228,6 +239,11 @@ internal static class SurfaceController
             if (p != null)
             {
                 HideWindow(p.MainWindowHandle);
+                // Small settle so the UIA tree has time to populate before
+                // the caller starts searching it. Especially helps on the
+                // hotkey path where activation happens in a less privileged
+                // context and content loads a beat slower.
+                Thread.Sleep(400);
                 return (p, true);
             }
             Thread.Sleep(50);

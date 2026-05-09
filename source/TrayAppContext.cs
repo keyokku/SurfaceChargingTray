@@ -1,12 +1,33 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
 namespace SurfaceChargingTray;
 
 internal sealed class TrayAppContext : ApplicationContext
 {
+    [DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    /// <summary>
+    /// Asks Windows to release as many physical pages as possible from this
+    /// process's working set. Our committed memory doesn't change — pages
+    /// that haven't been touched recently get paged out, and Task Manager's
+    /// "Memory" column drops correspondingly. Anything we use again is
+    /// faulted back in on demand. Called after each operation completes
+    /// and on an idle timer; the same trick OneDrive / Slack / Discord
+    /// trays use to look slim in Task Manager.
+    /// </summary>
+    private static void TrimWorkingSet()
+    {
+        try { EmptyWorkingSet(Process.GetCurrentProcess().Handle); }
+        catch { /* purely cosmetic — never let this crash */ }
+    }
+
     private readonly NotifyIcon _icon;
     private readonly ContextMenuStrip _menu;
     private readonly System.Windows.Forms.Timer _themeTimer;
+    private readonly System.Windows.Forms.Timer _trimTimer;
     private readonly HotkeyManager _hotkeys = new();
     private readonly SynchronizationContext _ui;
 
@@ -94,6 +115,18 @@ internal sealed class TrayAppContext : ApplicationContext
             ApplyMenuTheme();
         };
         _themeTimer.Start();
+
+        // Periodic working-set trim while idle so Task Manager stays slim
+        // even after a stretch of activity. 5 min is conservative; the OS
+        // would do this on its own under memory pressure, we just don't
+        // wait for it.
+        _trimTimer = new System.Windows.Forms.Timer { Interval = 5 * 60 * 1000 };
+        _trimTimer.Tick += (s, e) => { if (!_busy) TrimWorkingSet(); };
+        _trimTimer.Start();
+
+        // Initial trim after construction completes — one-time pages used
+        // for JIT during startup aren't needed anymore.
+        TrimWorkingSet();
     }
 
     // ---- Mode switching ------------------------------------------------
@@ -112,6 +145,7 @@ internal sealed class TrayAppContext : ApplicationContext
                 _busy = false;
                 if (err != null) ReportError(err);
                 else { ClearError(); UpdateMenuFromCache(); }
+                TrimWorkingSet();   // shake off the transient allocations
             }, null);
         });
     }
@@ -130,6 +164,7 @@ internal sealed class TrayAppContext : ApplicationContext
                 _busy = false;
                 if (err != null) ReportError(err);
                 else { ClearError(); UpdateMenuFromCache(); }
+                TrimWorkingSet();
             }, null);
         });
     }
@@ -226,6 +261,7 @@ internal sealed class TrayAppContext : ApplicationContext
                 _icon.ShowBalloonTip(2000, "Surface charging tray", "Hotkeys updated.", ToolTipIcon.Info);
             };
             form.ShowDialog();
+            TrimWorkingSet();   // WPF/WinForms layout pages aren't needed after close
         }
         catch (Exception ex)
         {
@@ -301,6 +337,8 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             _themeTimer.Stop();
             _themeTimer.Dispose();
+            _trimTimer.Stop();
+            _trimTimer.Dispose();
             _hotkeys.Dispose();
             // Drop the icon reference before disposing _icon's source bitmaps,
             // so NotifyIcon doesn't hold a dangling pointer.
