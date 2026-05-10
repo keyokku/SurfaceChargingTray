@@ -15,6 +15,15 @@ without you having to open Settings or the Surface app yourself.
 > *Battery & charging* UI. Most Surface devices from Pro 8 / Laptop 5 onward
 > have it. If your Surface app's *Battery & charging* page does not show those
 > three radio buttons, this tool cannot drive them.
+>
+> **Known Surface-app issue (not us):** on some installs the Surface app
+> intermittently fails to render the *Battery & charging* card even when you
+> open the app manually — it appears blank, missing, or stuck loading. This
+> is a long-standing Surface-app-side bug; reports go back to 2023 and the
+> usual fix is to **uninstall and reinstall the Surface app** from the
+> Microsoft Store. If our tool reports "card not found" and a manual launch
+> of the Surface app also doesn't show the card, it's almost certainly this
+> bug rather than something this tool is doing.
 
 ## Versions
 
