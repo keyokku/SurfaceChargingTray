@@ -1,4 +1,3 @@
-using System.IO;
 using System.Windows.Forms;
 
 namespace SurfaceChargingTray;
@@ -32,21 +31,22 @@ internal static class Program
 
         DarkMode.AllowDarkModeForApp();
 
+        // Heartbeat: a single line in surface-error.log so absence of any
+        // log after a click means the process died before reaching the
+        // event handler (vs. ran fine but didn't log anything).
+        try
+        {
+            var version = typeof(Program).Assembly.GetName().Version?.ToString() ?? "?";
+            Logger.Started(version);
+        }
+        catch { }
+
         Application.Run(new TrayAppContext());
     }
 
     static void HandleCrash(string source, Exception? ex)
     {
-        try
-        {
-            Directory.CreateDirectory(Paths.DataDir);
-            var msg = $"[{DateTime.Now:o}] {source}{Environment.NewLine}" +
-                      (ex?.ToString() ?? "(no exception object)") +
-                      Environment.NewLine + Environment.NewLine;
-            File.AppendAllText(Path.Combine(Paths.DataDir, "crash.log"), msg);
-        }
-        catch { /* if we can't even log, give up */ }
-
+        Logger.Crash(source, ex);
         try
         {
             MessageBox.Show(

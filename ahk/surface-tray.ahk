@@ -1,8 +1,10 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-; Surface charging mode tray.
+; Surface Charging Tray v1.1.0
 ; Right-click the tray icon for the menu, or use configurable hotkeys.
+; v1.1.0 adds Windows Power mode switching (Best efficiency / Balanced /
+; Best performance) directly from the tray, with three more hotkey slots.
 
 Persistent()  ; keep the script running so the tray icon stays alive
 
@@ -23,11 +25,22 @@ lastError := ""
 ; Ctrl+Shift+digit is generally free on Windows; avoid Win+digit (taskbar
 ; slots) and Alt+Shift (input language switcher).
 defaults := Map(
-    "adaptive",   Map("enabled", "0", "key", "^+1"),
-    "80",         Map("enabled", "0", "key", "^+2"),
-    "100-1day",   Map("enabled", "0", "key", "^+3"),
-    "100-1week",  Map("enabled", "0", "key", "^+4"),
-    "cycle",      Map("enabled", "0", "key", "^+B")
+    "adaptive",        Map("enabled", "0", "key", "^+1"),
+    "80",              Map("enabled", "0", "key", "^+2"),
+    "100-1day",        Map("enabled", "0", "key", "^+3"),
+    "100-1week",       Map("enabled", "0", "key", "^+4"),
+    "cycle",           Map("enabled", "0", "key", "^+B"),
+    "power-efficient", Map("enabled", "0", "key", "^+5"),
+    "power-balanced",  Map("enabled", "0", "key", "^+6"),
+    "power-perf",      Map("enabled", "0", "key", "^+7")
+)
+
+; Windows 11 Power mode overlay GUIDs (stable since Win10 1709).
+; Same constants the .exe build uses — see PowerMode.cs.
+PowerModeGuids := Map(
+    "efficient",   "961cc777-2547-4f9d-8174-7d86181b8a7a",
+    "balanced",    "00000000-0000-0000-0000-000000000000",
+    "performance", "ded574b5-45a0-4f42-8737-46345c09c238"
 )
 hk := LoadSettings()  ; current hotkey config; mutated by settings dialog
 
@@ -41,12 +54,26 @@ SetTimer(UpdateIconForTheme, 5000)   ; recheck every 5s for theme changes
 ApplyMenuTheme()                     ; dark-mode the tray context menu
 SetTimer(ApplyMenuTheme, 5000)       ; reapply on theme changes
 
+; ----- Tray menu -----
 A_TrayMenu.Delete()
 A_TrayMenu.Add("Adaptive",                (*) => SetMode("adaptive"))
 A_TrayMenu.Add("Limit to 80%",            (*) => SetMode("80"))
 A_TrayMenu.Add("Charge to 100% (1 day)",  (*) => SetMode("100", "1day"))
 A_TrayMenu.Add("Charge to 100% (1 week)", (*) => SetMode("100", "1week"))
-A_TrayMenu.Add()
+A_TrayMenu.Add()  ; separator
+
+; Windows Power mode submenu — three modes via direct powrprof.dll calls.
+; Hidden if the API isn't supported (very old Windows builds, server SKUs).
+powerMenu := Menu()
+powerMenu.Add("Best power efficiency", (*) => SetPowerMode("efficient"))
+powerMenu.Add("Balanced",              (*) => SetPowerMode("balanced"))
+powerMenu.Add("Best performance",      (*) => SetPowerMode("performance"))
+A_TrayMenu.Add("Windows Power mode", powerMenu)
+if !IsPowerModeSupported() {
+    try A_TrayMenu.Disable("Windows Power mode")
+}
+
+A_TrayMenu.Add()  ; separator
 A_TrayMenu.Add("Refresh status",          (*) => RefreshFromApp())
 A_TrayMenu.Add("Open Surface app",        (*) => OpenSurfaceApp())
 A_TrayMenu.Add("Settings...",             (*) => ShowSettings())
@@ -55,6 +82,8 @@ A_TrayMenu.Add("Show last error",         (*) => ShowLastError())
 A_TrayMenu.Add("Exit",                    (*) => ExitApp())
 
 UpdateAutoStartMenuCheck()
+UpdatePowerCheckMarks()
+SetTimer(UpdatePowerCheckMarks, 5000)  ; reflect external changes (Settings UI, AC/DC switch)
 
 ApplyHotkeys()
 LoadCacheToTray()
@@ -221,6 +250,100 @@ ModeToLabel(mode, duration) {
 }
 
 ; ----------------------------------------------------------------------
+; Windows Power mode (Best efficiency / Balanced / Best performance)
+;
+; Uses powrprof.dll directly via DllCall — no PowerShell hop. The
+; PowerSet*PowerMode functions need a POINTER to a 16-byte GUID buffer
+; (NOT the GUID by value); passing by value AVs on ARM64 because the
+; calling convention treats large structs differently. Same fix the
+; .exe build uses (see PowerMode.cs).
+;
+; PowerGetEffectiveOverlayScheme returns the currently active overlay
+; (accounts for AC/DC state). Returns Empty GUID when on Balanced
+; (the "no overlay" default state).
+;
+; PowerSetUserConfigured{AC,DC}PowerMode is the modern (Win10 1809+)
+; per-AC/DC pair. We set BOTH on each click so the choice persists
+; across plug-in/unplug, matching the unified tray-menu mental model.
+; ----------------------------------------------------------------------
+
+GuidStringToBuffer(guidStr) {
+    buf := Buffer(16, 0)
+    rc := DllCall("ole32\CLSIDFromString", "WStr", "{" guidStr "}", "Ptr", buf, "UInt")
+    if (rc != 0)
+        throw Error("Invalid GUID: " guidStr)
+    return buf
+}
+
+GuidBufferToString(buf) {
+    out := Buffer(80, 0)
+    if (DllCall("ole32\StringFromGUID2", "Ptr", buf, "Ptr", out, "Int", 40) = 0)
+        return ""
+    s := StrGet(out, "UTF-16")
+    ; Strip the surrounding braces from "{xxxxxxxx-...}".
+    return SubStr(s, 2, StrLen(s) - 2)
+}
+
+IsPowerModeSupported() {
+    try {
+        buf := Buffer(16, 0)
+        return DllCall("powrprof\PowerGetEffectiveOverlayScheme", "Ptr", buf, "UInt") = 0
+    } catch {
+        return false
+    }
+}
+
+GetPowerMode() {
+    try {
+        buf := Buffer(16, 0)
+        if (DllCall("powrprof\PowerGetEffectiveOverlayScheme", "Ptr", buf, "UInt") != 0)
+            return ""
+        return StrLower(GuidBufferToString(buf))
+    } catch {
+        return ""
+    }
+}
+
+SetPowerMode(modeName) {
+    global PowerModeGuids
+    if !PowerModeGuids.Has(modeName) {
+        ReportError("Unknown Power mode: " modeName)
+        return false
+    }
+    try {
+        buf := GuidStringToBuffer(PowerModeGuids[modeName])
+        rcAc := DllCall("powrprof\PowerSetUserConfiguredACPowerMode", "Ptr", buf, "UInt")
+        rcDc := DllCall("powrprof\PowerSetUserConfiguredDCPowerMode", "Ptr", buf, "UInt")
+        if (rcAc != 0 || rcDc != 0) {
+            ReportError("Failed to set Windows Power mode to " modeName " (ac=" rcAc ", dc=" rcDc ")")
+            return false
+        }
+    } catch as e {
+        ReportError("Failed to set Windows Power mode: " e.Message)
+        return false
+    }
+    UpdatePowerCheckMarks()
+    return true
+}
+
+UpdatePowerCheckMarks() {
+    global powerMenu
+    cur := GetPowerMode()
+    try powerMenu.Uncheck("Best power efficiency")
+    try powerMenu.Uncheck("Balanced")
+    try powerMenu.Uncheck("Best performance")
+    switch cur {
+        case "961cc777-2547-4f9d-8174-7d86181b8a7a":
+            try powerMenu.Check("Best power efficiency")
+        case "00000000-0000-0000-0000-000000000000":
+            try powerMenu.Check("Balanced")
+        case "ded574b5-45a0-4f42-8737-46345c09c238":
+            try powerMenu.Check("Best performance")
+        ; Anything else (OEM custom overlay) leaves all three unchecked.
+    }
+}
+
+; ----------------------------------------------------------------------
 ; Auto-start at Windows login
 ; ----------------------------------------------------------------------
 
@@ -348,11 +471,14 @@ ApplyHotkeys() {
         try Hotkey(m["key"], "Off")
     }
     actionToCallback := Map(
-        "adaptive",   (*) => SetMode("adaptive"),
-        "80",         (*) => SetMode("80"),
-        "100-1day",   (*) => SetMode("100", "1day"),
-        "100-1week",  (*) => SetMode("100", "1week"),
-        "cycle",      (*) => CycleMode()
+        "adaptive",        (*) => SetMode("adaptive"),
+        "80",              (*) => SetMode("80"),
+        "100-1day",        (*) => SetMode("100", "1day"),
+        "100-1week",       (*) => SetMode("100", "1week"),
+        "cycle",           (*) => CycleMode(),
+        "power-efficient", (*) => SetPowerMode("efficient"),
+        "power-balanced",  (*) => SetPowerMode("balanced"),
+        "power-perf",      (*) => SetPowerMode("performance")
     )
     for action, m in hk {
         if (m["enabled"] = "1" && m["key"] != "") {
@@ -393,11 +519,14 @@ ShowSettings() {
     g.Add("Text", "w380 " grayColor, "Tip: avoid Alt+Shift (Windows uses it for input language) and Win+digit (taskbar slots).")
 
     rows := [
-        { action: "adaptive",   label: "Adaptive" },
-        { action: "80",         label: "Limit to 80%" },
-        { action: "100-1day",   label: "Charge to 100% (1 day)" },
-        { action: "100-1week",  label: "Charge to 100% (1 week)" },
-        { action: "cycle",      label: "Cycle through modes" }
+        { action: "adaptive",        label: "Adaptive" },
+        { action: "80",              label: "Limit to 80%" },
+        { action: "100-1day",        label: "Charge to 100% (1 day)" },
+        { action: "100-1week",       label: "Charge to 100% (1 week)" },
+        { action: "cycle",           label: "Cycle through charging modes" },
+        { action: "power-efficient", label: "Power: Best power efficiency" },
+        { action: "power-balanced",  label: "Power: Balanced" },
+        { action: "power-perf",      label: "Power: Best performance" }
     ]
 
     controls := Map()

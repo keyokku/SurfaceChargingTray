@@ -413,19 +413,11 @@ internal static class SurfaceController
         return null;
     }
 
-    private static void WriteError(string msg)
-    {
-        try
-        {
-            Directory.CreateDirectory(Paths.DataDir);
-            File.WriteAllText(Paths.ErrorLog, msg);
-        }
-        catch { }
-    }
+    private static void WriteError(string msg) => Logger.Error(msg);
 
     private static void ClearError()
     {
-        try { if (File.Exists(Paths.ErrorLog)) File.Delete(Paths.ErrorLog); }
-        catch { }
+        // We no longer wipe surface-error.log on success — entries are
+        // append-only and rotated. Leaving for callers expecting the symbol.
     }
 }

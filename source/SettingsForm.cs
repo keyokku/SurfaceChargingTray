@@ -39,8 +39,8 @@ internal class SettingsForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
-        ClientSize = new Size(900, 660);
-        MinimumSize = new Size(780, 540);
+        ClientSize = new Size(900, 820);
+        MinimumSize = new Size(780, 720);
         Padding = new Padding(28);
 
         // ----- Bottom: footer (buttons + ko-fi link). Docks to bottom and
@@ -134,45 +134,22 @@ internal class SettingsForm : Form
         grid.Controls.Add(MakeHeaderLabel("Shift"),  4, 0);
         grid.Controls.Add(MakeHeaderLabel("Key"),    5, 0);
 
-        var actions = new (string Action, string Label)[]
-        {
-            ("adaptive",  "Adaptive"),
-            ("80",        "Limit to 80%"),
-            ("100-1day",  "Charge to 100% (1 day)"),
-            ("100-1week", "Charge to 100% (1 week)"),
-            ("cycle",     "Cycle through modes")
-        };
         var keyChoices = BuildKeyChoices();
-
         int rowIdx = 1;
-        foreach (var (action, label) in actions)
-        {
-            var row = new Row { Action = action };
-            row.Enable = new CheckBox { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 9, 0, 9) };
-            row.Win   = MakeModCheckbox();
-            row.Alt   = MakeModCheckbox();
-            row.Ctrl  = MakeModCheckbox();
-            row.Shift = MakeModCheckbox();
-            row.Key = new ComboBox
-            {
-                DropDownStyle = ComboBoxStyle.DropDownList,
-                Width = 130, Anchor = AnchorStyles.Left, Margin = new Padding(0, 7, 0, 7)
-            };
-            row.Key.Items.AddRange(keyChoices);
-            if (_model.Hotkeys.TryGetValue(action, out var h))
-            {
-                row.Enable.Checked = h.Enabled;
-                ParseHotkeyToControls(h.Key, row);
-            }
-            grid.Controls.Add(row.Enable, 0, rowIdx);
-            grid.Controls.Add(row.Win,    1, rowIdx);
-            grid.Controls.Add(row.Alt,    2, rowIdx);
-            grid.Controls.Add(row.Ctrl,   3, rowIdx);
-            grid.Controls.Add(row.Shift,  4, rowIdx);
-            grid.Controls.Add(row.Key,    5, rowIdx);
-            _rows.Add(row);
-            rowIdx++;
-        }
+
+        // ---- Charging modes section ----
+        rowIdx = AddSectionHeader(grid, rowIdx, "Charging modes");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "adaptive",  "Adaptive");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "80",        "Limit to 80%");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1day",  "Charge to 100% (1 day)");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1week", "Charge to 100% (1 week)");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "cycle",     "Cycle through charging modes");
+
+        // ---- Power modes section ----
+        rowIdx = AddSectionHeader(grid, rowIdx, "Windows Power mode");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "power-efficient", "Best power efficiency");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "power-balanced",  "Balanced");
+        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "power-perf",      "Best performance");
 
         var middle = new Panel
         {
@@ -188,6 +165,53 @@ internal class SettingsForm : Form
         Controls.Add(middle);  // added first so Fill sits "behind" docked
         Controls.Add(header);
         Controls.Add(footer);
+    }
+
+    /// <summary>Insert a section divider row spanning all 6 columns.</summary>
+    private static int AddSectionHeader(TableLayoutPanel grid, int rowIdx, string text)
+    {
+        var lbl = new Label
+        {
+            Text = text,
+            AutoSize = true,
+            Font = new Font("Segoe UI", 10.5f, FontStyle.Bold),
+            Margin = new Padding(0, rowIdx == 1 ? 4 : 18, 0, 6),
+            Anchor = AnchorStyles.Left,
+            Tag = "section"
+        };
+        grid.Controls.Add(lbl, 0, rowIdx);
+        grid.SetColumnSpan(lbl, 6);
+        return rowIdx + 1;
+    }
+
+    /// <summary>Add one hotkey row (enable + 4 modifier checkboxes + key combo).</summary>
+    private int AddHotkeyRow(TableLayoutPanel grid, int rowIdx, string[] keyChoices, string action, string label)
+    {
+        var row = new Row { Action = action };
+        row.Enable = new CheckBox { Text = label, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(0, 9, 0, 9) };
+        row.Win   = MakeModCheckbox();
+        row.Alt   = MakeModCheckbox();
+        row.Ctrl  = MakeModCheckbox();
+        row.Shift = MakeModCheckbox();
+        row.Key = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 130, Anchor = AnchorStyles.Left, Margin = new Padding(0, 7, 0, 7)
+        };
+        row.Key.Items.AddRange(keyChoices);
+        if (_model.Hotkeys.TryGetValue(action, out var h))
+        {
+            row.Enable.Checked = h.Enabled;
+            ParseHotkeyToControls(h.Key, row);
+        }
+        grid.Controls.Add(row.Enable, 0, rowIdx);
+        grid.Controls.Add(row.Win,    1, rowIdx);
+        grid.Controls.Add(row.Alt,    2, rowIdx);
+        grid.Controls.Add(row.Ctrl,   3, rowIdx);
+        grid.Controls.Add(row.Shift,  4, rowIdx);
+        grid.Controls.Add(row.Key,    5, rowIdx);
+        _rows.Add(row);
+        return rowIdx + 1;
     }
 
     private static Label MakeHeaderLabel(string text) => new()

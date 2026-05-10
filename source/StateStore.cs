@@ -63,5 +63,6 @@ internal static class Paths
         Path.GetDirectoryName(Environment.ProcessPath) ?? AppContext.BaseDirectory;
 
     public static string ErrorLog => Path.Combine(DataDir, "surface-error.log");
+    public static string CrashLog => Path.Combine(DataDir, "crash.log");
     public static string Settings => Path.Combine(DataDir, "settings.ini");
 }
