@@ -125,6 +125,6 @@ MIT — see [LICENSE](LICENSE).
 
 ## Author
 
-Made by [Keyokku](https://x.com/keyokku) ([u/keyokku](https://reddit.com/u/keyokku)).
-If this is useful to you, a small tip is appreciated:
+Made by [@Keyokku](https://x.com/keyokku) / [u/keyokku](https://reddit.com/u/keyokku).
+If this is useful to you, a small tip is appreciated, but no obligation:
 [ko-fi.com/keyokku](https://ko-fi.com/keyokku).
