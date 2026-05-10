@@ -68,12 +68,9 @@ Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public class W32 {
-    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int n);
     [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int w, int z, uint f);
 }
 "@
-
-$SW_HIDE = 0
 
 function Find-SurfaceProcess {
     Get-Process |
@@ -82,8 +79,25 @@ function Find-SurfaceProcess {
 }
 
 function Hide-Window([IntPtr]$hwnd) {
-    [W32]::SetWindowPos($hwnd, [IntPtr]::Zero, -32000, -32000, 0, 0, 0x0001 -bor 0x0004 -bor 0x0010) | Out-Null
-    [W32]::ShowWindow($hwnd, $SW_HIDE) | Out-Null
+    # Push to back of z-order. With any other window in front of it
+    # (Explorer, browser, etc.) the Surface app stays hidden behind.
+    # Older builds used SetWindowPos(-32000, -32000) + SW_HIDE which the
+    # Surface app's UWP host overrode mid-launch on most builds, leaving
+    # the window briefly visible to the user.
+    $HWND_BOTTOM    = [IntPtr]1
+    $SWP_NOSIZE     = 0x0001
+    $SWP_NOMOVE     = 0x0002
+    $SWP_NOACTIVATE = 0x0010
+    # Pass 1: push to back without moving.
+    [W32]::SetWindowPos($hwnd, $HWND_BOTTOM, 0, 0, 0, 0, $SWP_NOMOVE -bor $SWP_NOSIZE -bor $SWP_NOACTIVATE) | Out-Null
+    # Pass 2: also park offscreen — defensive in case some Surface app
+    # build does respect coords. The z-order push above is what keeps
+    # it hidden in either case.
+    [W32]::SetWindowPos($hwnd, $HWND_BOTTOM, -32000, -32000, 0, 0, $SWP_NOSIZE -bor $SWP_NOACTIVATE) | Out-Null
+    Start-Sleep -Milliseconds 150
+    # Pass 3: re-push after settle, in case the Surface app re-ordered
+    # itself to top during its own activation completion.
+    [W32]::SetWindowPos($hwnd, $HWND_BOTTOM, 0, 0, 0, 0, $SWP_NOMOVE -bor $SWP_NOSIZE -bor $SWP_NOACTIVATE) | Out-Null
 }
 
 function Wait-For([scriptblock]$test, [int]$timeoutMs = 10000, [int]$pollMs = 100) {
