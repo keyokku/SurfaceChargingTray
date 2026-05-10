@@ -16,6 +16,21 @@ internal class SettingsModel
     /// <summary>Detected AUMID of the Surface app, cached so we don't re-discover on every run.</summary>
     public string? SurfaceAumid { get; set; }
 
+    /// <summary>
+    /// Auto-discovered AutomationId / Name for the Battery & charging card and its
+    /// three radio buttons. Captured on the first successful lookup so subsequent
+    /// runs go straight through the AutomationId path (faster, language-independent,
+    /// version-independent). Cleared if validation ever fails — see UiaCache.cs.
+    /// </summary>
+    public string? BatteryCardId        { get; set; }
+    public string? BatteryCardName      { get; set; }
+    public string? AdaptiveRadioId      { get; set; }
+    public string? AdaptiveRadioName    { get; set; }
+    public string? Limit80RadioId       { get; set; }
+    public string? Limit80RadioName     { get; set; }
+    public string? Charge100RadioId     { get; set; }
+    public string? Charge100RadioName   { get; set; }
+
     public static readonly Dictionary<string, HotkeyEntry> Defaults = new()
     {
         // Charging modes
@@ -75,10 +90,35 @@ internal class SettingsModel
                     if (key.Equals("aumid", StringComparison.OrdinalIgnoreCase))
                         s.SurfaceAumid = val;
                 }
+                else if (section == "uia-cache")
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "battery_card_id":      s.BatteryCardId      = val; break;
+                        case "battery_card_name":    s.BatteryCardName    = val; break;
+                        case "adaptive_radio_id":    s.AdaptiveRadioId    = val; break;
+                        case "adaptive_radio_name":  s.AdaptiveRadioName  = val; break;
+                        case "limit80_radio_id":     s.Limit80RadioId     = val; break;
+                        case "limit80_radio_name":   s.Limit80RadioName   = val; break;
+                        case "charge100_radio_id":   s.Charge100RadioId   = val; break;
+                        case "charge100_radio_name": s.Charge100RadioName = val; break;
+                    }
+                }
             }
         }
         catch { }
         return s;
+    }
+
+    private bool HasUiaCacheData() =>
+        !string.IsNullOrEmpty(BatteryCardId)        || !string.IsNullOrEmpty(BatteryCardName)
+     || !string.IsNullOrEmpty(AdaptiveRadioId)      || !string.IsNullOrEmpty(AdaptiveRadioName)
+     || !string.IsNullOrEmpty(Limit80RadioId)       || !string.IsNullOrEmpty(Limit80RadioName)
+     || !string.IsNullOrEmpty(Charge100RadioId)     || !string.IsNullOrEmpty(Charge100RadioName);
+
+    private static void AppendIfSet(List<string> lines, string key, string? val)
+    {
+        if (!string.IsNullOrEmpty(val)) lines.Add($"{key}={val}");
     }
 
     public void Save()
@@ -97,6 +137,21 @@ internal class SettingsModel
                 lines.Add("");
                 lines.Add("[surface]");
                 lines.Add($"aumid={SurfaceAumid}");
+            }
+            // Only emit cache section if we've discovered at least one value;
+            // keeps a fresh settings.ini tidy on first launch before any lookup.
+            if (HasUiaCacheData())
+            {
+                lines.Add("");
+                lines.Add("[uia-cache]");
+                AppendIfSet(lines, "battery_card_id",      BatteryCardId);
+                AppendIfSet(lines, "battery_card_name",    BatteryCardName);
+                AppendIfSet(lines, "adaptive_radio_id",    AdaptiveRadioId);
+                AppendIfSet(lines, "adaptive_radio_name",  AdaptiveRadioName);
+                AppendIfSet(lines, "limit80_radio_id",     Limit80RadioId);
+                AppendIfSet(lines, "limit80_radio_name",   Limit80RadioName);
+                AppendIfSet(lines, "charge100_radio_id",   Charge100RadioId);
+                AppendIfSet(lines, "charge100_radio_name", Charge100RadioName);
             }
             File.WriteAllLines(Paths.Settings, lines);
         }

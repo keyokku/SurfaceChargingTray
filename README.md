@@ -18,12 +18,13 @@ without you having to open Settings or the Surface app yourself.
 
 ## Versions
 
-Both releases are kept available so you can pin to whichever you prefer.
+All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
 | **v1.2.0** *(coming soon)* | — | Charging Mode Scheduler — set a daily time and target charging mode (e.g. switch to *Charge to 100%* at 7am so the device is ready for the day). |
-| **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** *(latest)* | 2026-05-10 | Adds Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. Fully backward-compatible with v1.0.0 settings. |
+| **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** *(latest)* | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
+| **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** | 2026-05-10 | Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. |
 | **[v1.0.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.0.0)** | 2026-05-09 | Initial release. Charging-mode tray icon, light/dark theme, configurable hotkeys for the four modes + cycle, auto-start at Windows login, three packages (arm64 / x64 / AHK). |
 
 Full per-release notes: [CHANGELOG.md](CHANGELOG.md).
@@ -41,6 +42,8 @@ Get the latest from the [Releases](../../releases) tab. Three packages each rele
 To find your CPU: **Settings → System → About → System type**.
 
 To run: unzip anywhere, double-click `SurfaceChargingTray.exe` (or `surface-tray.ahk`). The tray icon appears immediately. No install, no admin, fully portable.
+
+> **AHK package being phased out.** Native arm64 + x64 `.exe` builds now cover every supported Surface without needing AutoHotkey installed and are ahead on features (auto-discovery, ID caching, coalescing queue). The AHK package will continue to receive critical fixes for a while, but new features land in the `.exe` only. If you have a working setup, no rush — but new users should prefer the matching architecture's `.exe`.
 
 ## Compatibility
 

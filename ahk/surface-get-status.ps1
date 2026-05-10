@@ -1,4 +1,4 @@
-# Reads the Surface app's current charging mode and writes the cache.
+﻿# Reads the Surface app's current charging mode and writes the cache.
 # Hidden launch + close pattern, READ-ONLY: does not call Select() on any element.
 # Writes surface-state.json on success and surface-error.log on failure.
 
@@ -7,6 +7,40 @@ $errorLog = Join-Path $PSScriptRoot 'surface-error.log'
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+
+# Localized UI Names — see surface-set-mode-hidden.ps1 header for context.
+$BatteryCardNames = @(
+    'Battery & charging', 'Battery and charging', 'Battery', 'Charging',
+    'Akku & Aufladen', 'Batterie et charge', 'Batería y carga',
+    'Batteria e ricarica', 'Bateria e carregamento', 'Battery en opladen',
+    'Akumulator i ładowanie', 'Batteri og opladning', 'Batteri och laddning',
+    'Batteri og lading', 'Akku ja lataus', 'Батарея и зарядка',
+    'バッテリーと充電', '电池和充电', '電池與充電', '배터리 및 충전',
+    'Pil ve şarj', 'البطارية والشحن'
+)
+$AdaptiveNames = @(
+    'Adaptive', 'Adaptive charging',
+    'Adaptiv', 'Adaptatif', 'Adaptable', 'Adattiva', 'Adaptável', 'Adaptief',
+    'アダプティブ', '自适应', '自適應', '적응형'
+)
+$Limit80Names = @(
+    'Limit to 80%', 'Limit charging to 80%', 'Battery limit 80%',
+    'Auf 80 % begrenzen', 'Limiter à 80 %', 'Limitar al 80 %',
+    'Limita al 80%', 'Limitar a 80%', 'Beperken tot 80%',
+    '80%に制限', '限制为80%', '限制至 80%', '80%로 제한'
+)
+$Charge100Names = @(
+    'Charge to 100%', 'Charge to full', 'Charge fully',
+    'Auf 100 % aufladen', 'Charger à 100 %', 'Cargar al 100 %',
+    'Carica al 100%', 'Carregar a 100%', 'Opladen tot 100%',
+    '100%まで充電', '充电至100%', '充電至 100%', '100%로 충전'
+)
+
+function Test-LooksLikeWeek([string]$label) {
+    if (-not $label) { return $false }
+    $lower = $label.ToLowerInvariant()
+    return ($lower -match 'week|semaine|woche|settimana|semana|неделя|週|주')
+}
 
 Add-Type @"
 using System;
@@ -70,9 +104,15 @@ function Invoke-GetStatus {
     $win = [System.Windows.Automation.AutomationElement]::FromHandle($proc.MainWindowHandle)
     if (-not $win) { throw "Could not bind UI Automation to the Surface window." }
 
-    $bcCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty, 'Battery & charging')
-    $bcGroup = Wait-For { $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $bcCond) } 10000 200
+    $bcGroup = Wait-For {
+        foreach ($n in $BatteryCardNames) {
+            $cond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, $n)
+            $hit = $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond)
+            if ($hit) { return $hit }
+        }
+        return $null
+    } 10000 200
     if (-not $bcGroup) {
         throw "'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes."
     }
@@ -86,30 +126,44 @@ function Invoke-GetStatus {
         }
     } catch { }
 
-    $names = @('Adaptive', 'Limit to 80%', 'Charge to 100%')
-    $selectedMode = $null
-    foreach ($n in $names) {
-        $cType = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::RadioButton)
-        $cName = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::NameProperty, $n)
-        $cond  = New-Object System.Windows.Automation.AndCondition($cType, $cName)
-        $rb = $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond)
-        if ($rb) {
-            try {
-                $sp = $rb.GetCurrentPattern(
-                    [System.Windows.Automation.SelectionItemPattern]::Pattern)
-                if ($sp.Current.IsSelected) { $selectedMode = $n; break }
-            } catch { }
+    # For each mode-key, walk its localized Names looking for one that is
+    # currently selected. First IsSelected hit wins. Maps directly to our
+    # internal mode-key without needing a Name → key dictionary, since each
+    # name list IS already keyed by mode.
+    $modeMap = @(
+        @{ key = 'adaptive'; names = $AdaptiveNames }
+        @{ key = '80';       names = $Limit80Names }
+        @{ key = '100';      names = $Charge100Names }
+    )
+    $cType = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::RadioButton)
+    $script:modeKey = $null
+    foreach ($m in $modeMap) {
+        foreach ($n in $m.names) {
+            $cName = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, $n)
+            $cond  = New-Object System.Windows.Automation.AndCondition($cType, $cName)
+            $rb = $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond)
+            if ($rb) {
+                try {
+                    $sp = $rb.GetCurrentPattern(
+                        [System.Windows.Automation.SelectionItemPattern]::Pattern)
+                    if ($sp.Current.IsSelected) { $script:modeKey = $m.key; break }
+                } catch { }
+            }
         }
+        if ($script:modeKey) { break }
     }
-    if (-not $selectedMode) {
+    if (-not $script:modeKey) {
         throw "None of the three charging-mode radios appear selected. Your Surface app build may differ from the one this tool was written for."
     }
 
-    $selectedDuration = $null
-    if ($selectedMode -eq 'Charge to 100%') {
+    # Duration combo only exists when mode is 100%. Combo's AutomationId is
+    # stable across locales; selected item's Name is localized and gets
+    # classified via Test-LooksLikeWeek substring match.
+    $script:durKey = $null
+    if ($script:modeKey -eq '100') {
         $cCombo = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
             'DurationSelectionComboBox')
@@ -118,21 +172,11 @@ function Invoke-GetStatus {
             try {
                 $sp = $combo.GetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern)
                 $sel = $sp.Current.GetSelection()
-                if ($sel.Length -gt 0) { $selectedDuration = $sel[0].Current.Name }
+                if ($sel.Length -gt 0) {
+                    $script:durKey = if (Test-LooksLikeWeek $sel[0].Current.Name) { '1week' } else { '1day' }
+                }
             } catch { }
         }
-    }
-
-    $script:modeKey = switch ($selectedMode) {
-        'Adaptive'        { 'adaptive' }
-        'Limit to 80%'    { '80' }
-        'Charge to 100%'  { '100' }
-        default           { $null }
-    }
-    $script:durKey = switch ($selectedDuration) {
-        '1 day'   { '1day' }
-        '1 week'  { '1week' }
-        default   { $null }
     }
 
     $state = [PSCustomObject]@{

@@ -1,10 +1,14 @@
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 
-; Surface Charging Tray v1.1.0
+; Surface Charging Tray v1.1.1
 ; Right-click the tray icon for the menu, or use configurable hotkeys.
-; v1.1.0 adds Windows Power mode switching (Best efficiency / Balanced /
-; Best performance) directly from the tray, with three more hotkey slots.
+; v1.1.1 brings the AHK package's PowerShell scripts in line with the .exe
+; build's multi-language UIA Name lookups so non-English Surface app
+; installs can find the Battery & charging card. The .exe build has more
+; (auto-discovery + ID caching + coalescing queue for rapid clicks); the
+; AHK package keeps a smaller surface area on purpose. Note: the AHK
+; package is being slowly phased out in favour of the .exe — see README.
 
 Persistent()  ; keep the script running so the tray icon stays alive
 
