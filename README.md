@@ -59,6 +59,9 @@ tool closes and reopens it fresh — that way the *Battery & charging* card
 is always reachable, even if you'd previously navigated to a different
 page in the app.
 
+Please give it a few seconds to do switches or after you update hotkey settings, 
+you can observe your taskbar if you don't see the Surface app window
+
 The Surface app's package family name varies between Surface generations
 (`Microsoft.SurfaceHub_8wekyb3d8bbwe`,
 `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Both
