@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory = $true)]
     [ValidateSet('adaptive', '80', '100')]
     [string]$Mode,
@@ -15,6 +15,54 @@ $errorLog = Join-Path $PSScriptRoot 'surface-error.log'
 
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
+
+# Localized UI Names the Surface app may use for the Battery & charging card
+# and its three radio buttons. Tried in order; first match wins. The .exe
+# build keeps a parallel list (UiaCache.cs) — when adding a new language
+# here, mirror it there too. The .exe also auto-discovers and caches IDs;
+# this PowerShell path is simpler and relies on the bundled list.
+$BatteryCardNames = @(
+    'Battery & charging', 'Battery and charging', 'Battery', 'Charging',
+    'Akku & Aufladen', 'Batterie et charge', 'Batería y carga',
+    'Batteria e ricarica', 'Bateria e carregamento', 'Battery en opladen',
+    'Akumulator i ładowanie', 'Batteri og opladning', 'Batteri och laddning',
+    'Batteri og lading', 'Akku ja lataus', 'Батарея и зарядка',
+    'バッテリーと充電', '电池和充电', '電池與充電', '배터리 및 충전',
+    'Pil ve şarj', 'البطارية والشحن'
+)
+$AdaptiveNames = @(
+    'Adaptive', 'Adaptive charging',
+    'Adaptiv', 'Adaptatif', 'Adaptable', 'Adattiva', 'Adaptável', 'Adaptief',
+    'アダプティブ', '自适应', '自適應', '적응형'
+)
+$Limit80Names = @(
+    'Limit to 80%', 'Limit charging to 80%', 'Battery limit 80%',
+    'Auf 80 % begrenzen', 'Limiter à 80 %', 'Limitar al 80 %',
+    'Limita al 80%', 'Limitar a 80%', 'Beperken tot 80%',
+    '80%に制限', '限制为80%', '限制至 80%', '80%로 제한'
+)
+$Charge100Names = @(
+    'Charge to 100%', 'Charge to full', 'Charge fully',
+    'Auf 100 % aufladen', 'Charger à 100 %', 'Cargar al 100 %',
+    'Carica al 100%', 'Carregar a 100%', 'Opladen tot 100%',
+    '100%まで充電', '充电至100%', '充電至 100%', '100%로 충전'
+)
+
+# Pick the right name array for our internal mode key.
+$RadioNamesByMode = @{
+    'adaptive' = $AdaptiveNames
+    '80'       = $Limit80Names
+    '100'      = $Charge100Names
+}
+
+# Crude substring-based classifier for the Duration combo items
+# ("1 day" / "1 week" / their localized equivalents). Anything that doesn't
+# read as "week" defaults to the day variant.
+function Test-LooksLikeWeek([string]$label) {
+    if (-not $label) { return $false }
+    $lower = $label.ToLowerInvariant()
+    return ($lower -match 'week|semaine|woche|settimana|semana|неделя|週|주')
+}
 
 Add-Type @"
 using System;
@@ -85,10 +133,16 @@ function Invoke-SetMode {
     } 5000 100
     if (-not $win) { throw "Could not bind UI Automation to the Surface window." }
 
-    $bcCond = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty, 'Battery & charging')
+    # Try each known localized Name in turn each poll. Card may be collapsed
+    # at search time (radios not yet in the subtree); we expand it after.
     $bcGroup = Wait-For {
-        $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $bcCond)
+        foreach ($n in $BatteryCardNames) {
+            $cond = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, $n)
+            $hit = $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond)
+            if ($hit) { return $hit }
+        }
+        return $null
     } 10000 200
     if (-not $bcGroup) {
         throw "'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes."
@@ -103,23 +157,25 @@ function Invoke-SetMode {
         }
     } catch { }
 
-    $nameMap = @{
-        'adaptive' = 'Adaptive'
-        '80'       = 'Limit to 80%'
-        '100'      = 'Charge to 100%'
-    }
-    $targetName = $nameMap[$Mode]
-
+    # Walk all known localized Names for this mode's radio. AndCondition
+    # ensures we match a RadioButton specifically (other elements may share
+    # the label).
+    $candidateNames = $RadioNamesByMode[$Mode]
     $cType = New-Object System.Windows.Automation.PropertyCondition(
         [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
         [System.Windows.Automation.ControlType]::RadioButton)
-    $cName = New-Object System.Windows.Automation.PropertyCondition(
-        [System.Windows.Automation.AutomationElement]::NameProperty, $targetName)
-    $cond  = New-Object System.Windows.Automation.AndCondition($cType, $cName)
-
-    $rb = Wait-For { $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond) } 5000 100
+    $rb = Wait-For {
+        foreach ($n in $candidateNames) {
+            $cName = New-Object System.Windows.Automation.PropertyCondition(
+                [System.Windows.Automation.AutomationElement]::NameProperty, $n)
+            $cond  = New-Object System.Windows.Automation.AndCondition($cType, $cName)
+            $hit = $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cond)
+            if ($hit) { return $hit }
+        }
+        return $null
+    } 5000 100
     if (-not $rb) {
-        throw "Couldn't find the '$targetName' radio button. Your Surface app may be an older build that doesn't expose this mode."
+        throw "Couldn't find the radio button for mode '$Mode'. Your Surface app may be an older build that doesn't expose this mode, or your Windows display language uses a label this script doesn't recognize yet."
     }
 
     $selPat = $rb.GetCurrentPattern(
@@ -130,33 +186,52 @@ function Invoke-SetMode {
     }
 
     if ($Mode -eq '100') {
-        $durLabel = if ($Duration -eq '1week') { '1 week' } else { '1 day' }
-
+        # Combo's AutomationId is Microsoft's stable internal ID, not localized.
+        # Combo items, however, ARE localized — we match by substring (week/day)
+        # using Test-LooksLikeWeek so non-English labels still classify.
+        $wantWeek = ($Duration -eq '1week')
         $cCombo = New-Object System.Windows.Automation.PropertyCondition(
             [System.Windows.Automation.AutomationElement]::AutomationIdProperty,
             'DurationSelectionComboBox')
         $combo = Wait-For { $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cCombo) } 3000 100
 
         if ($combo) {
-            $currentLabel = ''
+            # Skip the dance if the currently selected item already matches.
+            $skipUpdate = $false
             try {
                 $sp = $combo.GetCurrentPattern([System.Windows.Automation.SelectionPattern]::Pattern)
                 $sel = $sp.Current.GetSelection()
-                if ($sel.Length -gt 0) { $currentLabel = $sel[0].Current.Name }
+                if ($sel.Length -gt 0) {
+                    $currentIsWeek = Test-LooksLikeWeek $sel[0].Current.Name
+                    if ($currentIsWeek -eq $wantWeek) { $skipUpdate = $true }
+                }
             } catch { }
 
-            if ($currentLabel -ne $durLabel) {
+            if (-not $skipUpdate) {
                 try {
                     $cExp = $combo.GetCurrentPattern(
                         [System.Windows.Automation.ExpandCollapsePattern]::Pattern)
                     $cExp.Expand()
                     Start-Sleep -Milliseconds 350
 
-                    $cItem = New-Object System.Windows.Automation.PropertyCondition(
-                        [System.Windows.Automation.AutomationElement]::NameProperty, $durLabel)
-                    $item = Wait-For { $win.FindFirst([System.Windows.Automation.TreeScope]::Subtree, $cItem) } 2000 100
-                    if ($item) {
-                        $itemSel = $item.GetCurrentPattern(
+                    # After expand, combo items appear as ListItem descendants.
+                    # Find them all then pick by substring classification.
+                    $itemCond = New-Object System.Windows.Automation.PropertyCondition(
+                        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+                        [System.Windows.Automation.ControlType]::ListItem)
+                    $items = Wait-For {
+                        $found = $combo.FindAll([System.Windows.Automation.TreeScope]::Subtree, $itemCond)
+                        if ($found.Count -gt 0) { return $found } else { return $null }
+                    } 2000 100
+
+                    $target = $null
+                    if ($items) {
+                        foreach ($it in $items) {
+                            if ((Test-LooksLikeWeek $it.Current.Name) -eq $wantWeek) { $target = $it; break }
+                        }
+                    }
+                    if ($target) {
+                        $itemSel = $target.GetCurrentPattern(
                             [System.Windows.Automation.SelectionItemPattern]::Pattern)
                         $itemSel.Select()
                         Start-Sleep -Milliseconds 250

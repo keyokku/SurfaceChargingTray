@@ -12,6 +12,14 @@ internal static class SurfaceController
     /// <summary>Set by TrayAppContext at startup once AumidResolver picks an AUMID.</summary>
     public static string Aumid { get; set; } = DefaultAumid;
 
+    /// <summary>
+    /// Set by TrayAppContext at startup. Used by UiaCache to read/write
+    /// AutomationId + Name caches that survive across app launches, so we
+    /// can adapt to localized labels and Surface app updates without
+    /// hardcoding strings. Tolerated null for tests / early init.
+    /// </summary>
+    public static SettingsModel? Settings { get; set; }
+
     private const int SW_HIDE = 0;
     private const uint SWP_NOSIZE     = 0x0001;
     private const uint SWP_NOZORDER   = 0x0004;
@@ -24,12 +32,19 @@ internal static class SurfaceController
 
     /// <summary>
     /// Errors from the inner attempt that should be retried automatically.
-    /// Both happen when we briefly catch the Surface app in a transient
-    /// activation state — most often right after the user changed Settings,
-    /// or when system focus is still settling after a UI event.
+    /// Limited to UI-Automation binding failures — those happen when we
+    /// briefly catch the Surface window mid-activation and the UIA tree
+    /// isn't bindable yet. A 500 ms delay then retry usually clears it.
+    ///
+    /// "Battery & charging card not found" is intentionally NOT in this
+    /// list anymore: SetModeOnce / RefreshStateOnce already runs the
+    /// discovery scan as a deliberate one-shot fallback when the layered
+    /// lookup misses. If discovery also failed, retrying the whole call
+    /// would just discover again and open the Surface app a second time
+    /// to no benefit. The user gets a clean single-attempt error.
     /// </summary>
     private static bool IsTransient(string? msg) =>
-        msg != null && (msg.Contains("Battery & charging") || msg.Contains("UI Automation"));
+        msg != null && msg.Contains("UI Automation");
 
     /// <summary>
     /// Switches the Surface app to the given mode.
@@ -64,26 +79,32 @@ internal static class SurfaceController
                 }, 5000);
             if (win == null) throw new Exception("Could not bind UI Automation to the Surface window.");
 
-            var bcGroup = WaitFor(() => win.FindFirst(TreeScope.Subtree,
-                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 15000, 200);
+            // Layered lookup: cached AutomationId → cached Name → known-Names list
+            // → structural search for any Group with 3+ radios. Cache is updated on
+            // every successful match so subsequent runs skip straight to the fast path.
+            var settings = Settings ?? SettingsModel.Load();
+            var bcGroup = UiaCache.FindBatteryCard(win, settings, 15000);
+            if (bcGroup == null)
+            {
+                // Self-healing: comprehensive discovery scan as last resort.
+                // Expands every collapsible element in the window, walks the
+                // tree, captures the card + 3 radios into the cache. Slow
+                // (~1-2s) but only fires when normal lookup fails — typically
+                // first launch after a Surface app update changed the labels.
+                if (UiaCache.DiscoverAndCacheAll(win, settings))
+                    bcGroup = UiaCache.FindBatteryCard(win, settings, 5000);
+            }
             if (bcGroup == null)
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
 
             ExpandIfCollapsed(bcGroup);
 
-            string targetName = mode switch
-            {
-                "adaptive" => "Adaptive",
-                "80"       => "Limit to 80%",
-                "100"      => "Charge to 100%",
-                _ => throw new ArgumentException($"Unknown mode: {mode}")
-            };
+            if (mode != "adaptive" && mode != "80" && mode != "100")
+                throw new ArgumentException($"Unknown mode: {mode}");
 
-            var rb = WaitFor(() => win.FindFirst(TreeScope.Subtree, new AndCondition(
-                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton),
-                new PropertyCondition(AutomationElement.NameProperty, targetName))), 5000);
+            var rb = UiaCache.FindRadio(bcGroup, mode, settings, 5000);
             if (rb == null)
-                throw new Exception($"Couldn't find the '{targetName}' radio button. Your Surface app may be an older build that doesn't expose this mode.");
+                throw new Exception($"Couldn't find the radio button for mode '{mode}'. Your Surface app may be an older build that doesn't expose this mode.");
 
             var sel = (SelectionItemPattern)rb.GetCurrentPattern(SelectionItemPattern.Pattern);
             if (!sel.Current.IsSelected)
@@ -148,32 +169,33 @@ internal static class SurfaceController
             var win = AutomationElement.FromHandle(proc.MainWindowHandle)
                 ?? throw new Exception("Could not bind UI Automation to the Surface window.");
 
-            var bcGroup = WaitFor(() => win.FindFirst(TreeScope.Subtree,
-                new PropertyCondition(AutomationElement.NameProperty, "Battery & charging")), 15000, 200);
+            var settings = Settings ?? SettingsModel.Load();
+            var bcGroup = UiaCache.FindBatteryCard(win, settings, 15000);
+            if (bcGroup == null)
+            {
+                if (UiaCache.DiscoverAndCacheAll(win, settings))
+                    bcGroup = UiaCache.FindBatteryCard(win, settings, 5000);
+            }
             if (bcGroup == null)
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
 
             ExpandIfCollapsed(bcGroup);
 
-            string? selectedMode = null;
-            foreach (var name in new[] { "Adaptive", "Limit to 80%", "Charge to 100%" })
-            {
-                var rb = win.FindFirst(TreeScope.Subtree, new AndCondition(
-                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton),
-                    new PropertyCondition(AutomationElement.NameProperty, name)));
-                if (rb == null) continue;
-                try
-                {
-                    var sp = (SelectionItemPattern)rb.GetCurrentPattern(SelectionItemPattern.Pattern);
-                    if (sp.Current.IsSelected) { selectedMode = name; break; }
-                }
-                catch { }
-            }
-            if (selectedMode == null)
+            // FindSelectedModeKey internally walks the 3 radios via the layered lookup
+            // (so its cache gets populated as a side effect) and returns the modeKey
+            // of whichever radio reports IsSelected.
+            var selectedKey = UiaCache.FindSelectedModeKey(bcGroup, settings);
+            if (selectedKey == null)
                 throw new Exception("None of the three charging-mode radios appear selected. Your Surface app build may differ from the one this tool was written for.");
 
-            string? selectedDuration = null;
-            if (selectedMode == "Charge to 100%")
+            // Duration combo only exists when "Charge to 100%" is selected.
+            // The combo's AutomationId ("DurationSelectionComboBox") is set by
+            // Microsoft and isn't localized, so it stays a stable key. The
+            // selected item's Name IS localized; we infer 1day vs 1week from
+            // a substring match rather than exact-equality so non-English
+            // labels like "1 jour" / "1 semaine" still get classified.
+            string? durKey = null;
+            if (selectedKey == "100")
             {
                 var combo = win.FindFirst(TreeScope.Subtree,
                     new PropertyCondition(AutomationElement.AutomationIdProperty, "DurationSelectionComboBox"));
@@ -183,27 +205,24 @@ internal static class SurfaceController
                     {
                         var sp = (SelectionPattern)combo.GetCurrentPattern(SelectionPattern.Pattern);
                         var selArr = sp.Current.GetSelection();
-                        if (selArr.Length > 0) selectedDuration = selArr[0].Current.Name;
+                        if (selArr.Length > 0)
+                        {
+                            var label = selArr[0].Current.Name?.ToLowerInvariant() ?? "";
+                            // crude but resilient classification — most languages
+                            // keep "1" + a day/week stem in the visible label.
+                            if (label.Contains("week") || label.Contains("semaine") ||
+                                label.Contains("woche") || label.Contains("settimana") ||
+                                label.Contains("неделя") || label.Contains("週"))
+                                durKey = "1week";
+                            else
+                                durKey = "1day";
+                        }
                     }
                     catch { }
                 }
             }
 
-            string modeKey = selectedMode switch
-            {
-                "Adaptive"       => "adaptive",
-                "Limit to 80%"   => "80",
-                "Charge to 100%" => "100",
-                _ => ""
-            };
-            string? durKey = selectedDuration switch
-            {
-                "1 day"  => "1day",
-                "1 week" => "1week",
-                _ => null
-            };
-
-            StateStore.Save(modeKey, durKey);
+            StateStore.Save(selectedKey, durKey);
 
             if (launchedByUs)
             {
@@ -336,22 +355,27 @@ internal static class SurfaceController
 
     private static void SetDuration(AutomationElement win, string duration)
     {
-        string durLabel = duration == "1week" ? "1 week" : "1 day";
-
+        // Combo's AutomationId is stable across locales (Microsoft's internal
+        // English ID, not localized). The combo's items, however, have
+        // localized Names like "1 day" / "1 jour" / "1 woche" — we identify
+        // them by substring match rather than exact equality.
         var combo = WaitFor(() => win.FindFirst(TreeScope.Subtree,
             new PropertyCondition(AutomationElement.AutomationIdProperty, "DurationSelectionComboBox")), 3000);
         if (combo == null) return;
 
-        string currentLabel = "";
+        bool wantWeek = duration == "1week";
+
+        // If the currently selected item already matches the target, skip the dance.
         try
         {
             var sp = (SelectionPattern)combo.GetCurrentPattern(SelectionPattern.Pattern);
             var selArr = sp.Current.GetSelection();
-            if (selArr.Length > 0) currentLabel = selArr[0].Current.Name;
+            if (selArr.Length > 0)
+            {
+                if (LooksLikeWeek(selArr[0].Current.Name) == wantWeek) return;
+            }
         }
         catch { }
-
-        if (currentLabel == durLabel) return;
 
         try
         {
@@ -359,11 +383,27 @@ internal static class SurfaceController
             cExp.Expand();
             Thread.Sleep(350);
 
-            var item = WaitFor(() => win.FindFirst(TreeScope.Subtree,
-                new PropertyCondition(AutomationElement.NameProperty, durLabel)), 2000);
-            if (item != null)
+            // Combo items appear as descendants once expanded. Find them all,
+            // then pick the one matching our wantWeek classification.
+            var items = WaitFor(() =>
             {
-                var iSel = (SelectionItemPattern)item.GetCurrentPattern(SelectionItemPattern.Pattern);
+                var found = combo.FindAll(TreeScope.Subtree,
+                    new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem));
+                return found.Count > 0 ? found : null;
+            }, 2000, 100);
+
+            AutomationElement? target = null;
+            if (items != null)
+            {
+                foreach (AutomationElement it in items)
+                {
+                    if (LooksLikeWeek(it.Current.Name) == wantWeek) { target = it; break; }
+                }
+            }
+
+            if (target != null)
+            {
+                var iSel = (SelectionItemPattern)target.GetCurrentPattern(SelectionItemPattern.Pattern);
                 iSel.Select();
                 Thread.Sleep(250);
             }
@@ -373,6 +413,21 @@ internal static class SurfaceController
             }
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Crude language-resilient classifier for the duration combo. Most
+    /// localized labels keep a recognizable week-stem; everything else
+    /// is treated as the day option (the only other value Microsoft ships).
+    /// </summary>
+    private static bool LooksLikeWeek(string? label)
+    {
+        if (string.IsNullOrEmpty(label)) return false;
+        var lower = label.ToLowerInvariant();
+        return lower.Contains("week")    || lower.Contains("semaine") ||
+               lower.Contains("woche")   || lower.Contains("settimana") ||
+               lower.Contains("semana")  || lower.Contains("неделя") ||
+               lower.Contains("週")       || lower.Contains("주");
     }
 
     private static void CloseProc(Process p)

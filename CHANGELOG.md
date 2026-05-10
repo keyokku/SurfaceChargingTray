@@ -5,6 +5,65 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.1.1 — 2026-05-10
+
+Reliability and internationalization patch. Fully backward-compatible
+with v1.1.0 settings.
+
+### What's new
+
+- **Multi-language UIA Name lookup** for the Surface app's Battery & charging
+  card and the three charging-mode radios. The old build relied on the
+  English label `"Battery & charging"`; non-English Surface app installs
+  hit a "card not found" error. v1.1.1 ships with a bundled list of common
+  localized labels (English variants + ~15 European/Asian locales) and
+  tries each one in turn. The duration combo items ("1 day" / "1 week")
+  are now identified by substring match across major languages.
+- **Auto-discovery and ID caching (`.exe` build only).** On first launch,
+  the tray runs a background scan that expands every collapsible element
+  in the Surface app and captures each element's `AutomationId` and
+  `Name` into `[uia-cache]` in `settings.ini`. Subsequent menu clicks
+  hit the cache on the first poll instead of doing a 15-second name search.
+- **Self-healing on schema changes (`.exe` build only).** If a future
+  Surface app update changes the labels or structure, the layered lookup
+  falls through to the discovery scan as a one-shot fallback (then re-caches),
+  so the tray adapts without a code release.
+- **Coalescing queue for rapid mode switches (`.exe` build only).** Clicking
+  modes back-to-back used to silently drop the second click. The queue now
+  holds the most recent request and runs it after the in-flight operation
+  completes — latest-click-wins. Tray tooltip says "queued: …" while
+  waiting. Same coalescing applies to refresh.
+
+### Reliability fixes
+
+- Removed `"Battery & charging"` from the transient-retry path. Discovery
+  is now a deliberate one-shot fallback; no more "Surface app opens twice"
+  on persistent failures.
+- Layer 1 cache lookup requires AutomationId AND Name to both match
+  (Microsoft assigns generic IDs like `"Expander"` to many cards;
+  ID-alone could resolve to the wrong element).
+
+### AHK package
+
+The AHK package gets the same multi-language Name lookup in both PS scripts
+(`surface-set-mode-hidden.ps1` and `surface-get-status.ps1`) so non-English
+Surface app installs work there too. The other v1.1.1 features (auto-
+discovery, ID caching, coalescing queue) are `.exe`-only by design — keeping
+the AHK scripts simple and inspectable.
+
+> **Heads up:** the AHK package is being slowly phased out in upcoming
+> releases. The `.exe` build now reaches feature parity and beyond on every
+> supported architecture (native arm64 + x64), without needing AutoHotkey
+> installed. The AHK package will continue to receive critical fixes for
+> a while but new features will land in the `.exe` only.
+
+### Compatibility
+
+Same as v1.1.0 — Windows 10 build 19041 or newer, native arm64 + x64,
+AHK package universal.
+
+---
+
 ## v1.1.0 — 2026-05-10
 
 New features and resilience improvements. Fully backward-compatible with v1.0.0

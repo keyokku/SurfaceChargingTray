@@ -84,6 +84,11 @@ internal sealed class TrayAppContext : ApplicationContext
         // returns something; persists to settings.ini.
         SurfaceController.Aumid = AumidResolver.Resolve(_settings);
 
+        // Hand the same settings object to SurfaceController so UiaCache can
+        // read/write the auto-discovered AutomationId + Name caches across
+        // launches without us having to plumb settings through every call.
+        SurfaceController.Settings = _settings;
+
         _menu = new ContextMenuStrip { ShowImageMargin = true };
         _miAdaptive  = new ToolStripMenuItem("Adaptive",                (Image?)null, (s, e) => StartSetMode("adaptive"));
         _mi80        = new ToolStripMenuItem("Limit to 80%",            (Image?)null, (s, e) => StartSetMode("80"));
@@ -132,6 +137,14 @@ internal sealed class TrayAppContext : ApplicationContext
         UpdateAutoStartCheck();
         ApplyHotkeys();
 
+        // Auto-discovery on first launch: if the UIA cache is empty, fire a
+        // background RefreshState. RefreshState's normal-then-discovery flow
+        // expands the Surface app's UI and writes every needed AutomationId
+        // and Name into settings.ini. The very first user click after the
+        // refresh completes hits Layer 1 (cached AutomationId) instead of
+        // doing an expensive Name search across 19 localized variants.
+        if (string.IsNullOrEmpty(_settings.BatteryCardId)) StartRefresh();
+
         _themeTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         _themeTimer.Tick += (s, e) =>
         {
@@ -158,10 +171,35 @@ internal sealed class TrayAppContext : ApplicationContext
     }
 
     // ---- Mode switching ------------------------------------------------
+    //
+    // Each user action runs serially against the Surface app — back-to-back
+    // requests would race the Surface app's launch/teardown cycle and fail
+    // unpredictably. Instead of dropping rapid clicks (silent and confusing),
+    // we coalesce them: while one operation is in flight, the most recent
+    // pending request is held in _pendingMode / _pendingRefresh, and the
+    // completion handler kicks it off automatically. Only the LATEST mode
+    // wins on rapid-fire clicks — the user's actual intent — and they get
+    // visible feedback ("queued: …") instead of a silently-dropped click.
+
+    private (string mode, string? duration)? _pendingMode = null;
+    private bool _pendingRefresh = false;
 
     private void StartSetMode(string mode, string? duration = null)
     {
-        if (_busy) return;
+        if (_busy)
+        {
+            _pendingMode = (mode, duration);
+            // Refresh queued behind a mode change is redundant — the mode
+            // change reads + saves state on its own. Drop any pending refresh.
+            _pendingRefresh = false;
+            _icon.Text = ClampTooltip("Surface Charging: queued " + LabelFor(mode, duration));
+            return;
+        }
+        RunSetMode(mode, duration);
+    }
+
+    private void RunSetMode(string mode, string? duration)
+    {
         _busy = true;
         _icon.Text = "Surface Charging: switching...";
 
@@ -174,13 +212,42 @@ internal sealed class TrayAppContext : ApplicationContext
                 if (err != null) ReportError(err);
                 else { ClearError(); UpdateMenuFromCache(); }
                 TrimWorkingSet();   // shake off the transient allocations
+                ProcessPending();
             }, null);
         });
     }
 
+    /// <summary>Run the queued operation if any, after a previous one finished.</summary>
+    private void ProcessPending()
+    {
+        if (_pendingMode.HasValue)
+        {
+            var (m, d) = _pendingMode.Value;
+            _pendingMode = null;
+            _pendingRefresh = false;   // mode change supersedes any pending refresh
+            RunSetMode(m, d);
+        }
+        else if (_pendingRefresh)
+        {
+            _pendingRefresh = false;
+            RunRefresh();
+        }
+    }
+
     private void StartRefresh()
     {
-        if (_busy) return;
+        if (_busy)
+        {
+            // Multiple rapid refreshes coalesce into one — running back-to-back
+            // refreshes would just cycle the Surface app for no benefit.
+            _pendingRefresh = true;
+            return;
+        }
+        RunRefresh();
+    }
+
+    private void RunRefresh()
+    {
         _busy = true;
         _icon.Text = "Surface Charging: refreshing...";
 
@@ -195,6 +262,7 @@ internal sealed class TrayAppContext : ApplicationContext
                 // Refresh power mode too — cheap (one Win32 call).
                 UpdatePowerModeChecks();
                 TrimWorkingSet();
+                ProcessPending();
             }, null);
         });
     }
