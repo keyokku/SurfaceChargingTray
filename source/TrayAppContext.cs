@@ -55,6 +55,10 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly ToolStripMenuItem _mi80;
     private readonly ToolStripMenuItem _mi100Day;
     private readonly ToolStripMenuItem _mi100Week;
+    private readonly ToolStripMenuItem _miPower;       // submenu parent
+    private readonly ToolStripMenuItem _miPowerEff;
+    private readonly ToolStripMenuItem _miPowerBal;
+    private readonly ToolStripMenuItem _miPowerPerf;
     private readonly ToolStripMenuItem _miRefresh;
     private readonly ToolStripMenuItem _miOpenApp;
     private readonly ToolStripMenuItem _miSettings;
@@ -85,6 +89,13 @@ internal sealed class TrayAppContext : ApplicationContext
         _mi80        = new ToolStripMenuItem("Limit to 80%",            (Image?)null, (s, e) => StartSetMode("80"));
         _mi100Day    = new ToolStripMenuItem("Charge to 100% (1 day)",  (Image?)null, (s, e) => StartSetMode("100", "1day"));
         _mi100Week   = new ToolStripMenuItem("Charge to 100% (1 week)", (Image?)null, (s, e) => StartSetMode("100", "1week"));
+
+        _miPowerEff  = new ToolStripMenuItem("Best power efficiency",   (Image?)null, (s, e) => SetPower(PowerMode.Mode.Efficient));
+        _miPowerBal  = new ToolStripMenuItem("Balanced",                (Image?)null, (s, e) => SetPower(PowerMode.Mode.Balanced));
+        _miPowerPerf = new ToolStripMenuItem("Best performance",        (Image?)null, (s, e) => SetPower(PowerMode.Mode.Performance));
+        _miPower     = new ToolStripMenuItem("Windows Power mode");
+        _miPower.DropDownItems.AddRange(new ToolStripItem[] { _miPowerEff, _miPowerBal, _miPowerPerf });
+
         _miRefresh   = new ToolStripMenuItem("Refresh status",          (Image?)null, (s, e) => StartRefresh());
         _miOpenApp   = new ToolStripMenuItem("Open Surface app",        (Image?)null, (s, e) => OpenSurfaceApp());
         _miSettings  = new ToolStripMenuItem("Settings...",             (Image?)null, (s, e) => ShowSettings());
@@ -92,12 +103,20 @@ internal sealed class TrayAppContext : ApplicationContext
         _miShowError = new ToolStripMenuItem("Show last error",         (Image?)null, (s, e) => ShowLastError());
         _miExit      = new ToolStripMenuItem("Exit",                    (Image?)null, (s, e) => ExitThread());
 
+        // Layout: charging modes [---] Power mode [---] secondary actions
         _menu.Items.AddRange(new ToolStripItem[]
         {
             _miAdaptive, _mi80, _mi100Day, _mi100Week,
             new ToolStripSeparator(),
+            _miPower,
+            new ToolStripSeparator(),
             _miRefresh, _miOpenApp, _miSettings, _miAutoStart, _miShowError, _miExit
         });
+
+        // Hide the Power-mode submenu entirely on systems that don't expose
+        // overlays (very old Windows builds, server SKUs).
+        if (!PowerMode.IsSupported())
+            _miPower.Visible = false;
 
         _icon = new NotifyIcon
         {
@@ -109,6 +128,7 @@ internal sealed class TrayAppContext : ApplicationContext
         ApplyTrayIcon();
         ApplyMenuTheme();
         UpdateMenuFromCache();
+        UpdatePowerModeChecks();
         UpdateAutoStartCheck();
         ApplyHotkeys();
 
@@ -117,6 +137,10 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             ApplyTrayIcon();
             ApplyMenuTheme();
+            // Cheap (one Win32 call) — keeps Power-mode check marks in sync
+            // when the user changes it via Settings, or when Surface
+            // auto-switches on AC/DC transitions.
+            UpdatePowerModeChecks();
         };
         _themeTimer.Start();
 
@@ -168,9 +192,29 @@ internal sealed class TrayAppContext : ApplicationContext
                 _busy = false;
                 if (err != null) ReportError(err);
                 else { ClearError(); UpdateMenuFromCache(); }
+                // Refresh power mode too — cheap (one Win32 call).
+                UpdatePowerModeChecks();
                 TrimWorkingSet();
             }, null);
         });
+    }
+
+    // ---- Power mode -----------------------------------------------------
+
+    private void SetPower(PowerMode.Mode mode)
+    {
+        if (PowerMode.Set(mode))
+            UpdatePowerModeChecks();
+        else
+            ReportError($"Failed to set Windows Power mode to {PowerMode.Label(mode)}.");
+    }
+
+    private void UpdatePowerModeChecks()
+    {
+        var current = PowerMode.Get();
+        _miPowerEff.Checked  = current == PowerMode.Mode.Efficient;
+        _miPowerBal.Checked  = current == PowerMode.Mode.Balanced;
+        _miPowerPerf.Checked = current == PowerMode.Mode.Performance;
     }
 
     // ---- Error surfacing -----------------------------------------------
@@ -326,7 +370,10 @@ internal sealed class TrayAppContext : ApplicationContext
             { "80",        () => HotkeyTriggered(() => StartSetMode("80"))               },
             { "100-1day",  () => HotkeyTriggered(() => StartSetMode("100", "1day"))      },
             { "100-1week", () => HotkeyTriggered(() => StartSetMode("100", "1week"))     },
-            { "cycle",     () => HotkeyTriggered(() => CycleMode())                      }
+            { "cycle",     () => HotkeyTriggered(() => CycleMode())                      },
+            { "power-efficient", () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Efficient))   },
+            { "power-balanced",  () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Balanced))    },
+            { "power-perf",      () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Performance)) }
         };
         var failures = new List<string>();
         foreach (var (action, h) in _settings.Hotkeys)

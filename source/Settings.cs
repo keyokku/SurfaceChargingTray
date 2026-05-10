@@ -18,11 +18,16 @@ internal class SettingsModel
 
     public static readonly Dictionary<string, HotkeyEntry> Defaults = new()
     {
-        { "adaptive",  new HotkeyEntry { Enabled = false, Key = "^+1" } }, // Ctrl+Shift+1
-        { "80",        new HotkeyEntry { Enabled = false, Key = "^+2" } },
-        { "100-1day",  new HotkeyEntry { Enabled = false, Key = "^+3" } },
-        { "100-1week", new HotkeyEntry { Enabled = false, Key = "^+4" } },
-        { "cycle",     new HotkeyEntry { Enabled = false, Key = "^+B" } }
+        // Charging modes
+        { "adaptive",        new HotkeyEntry { Enabled = false, Key = "^+1" } },
+        { "80",              new HotkeyEntry { Enabled = false, Key = "^+2" } },
+        { "100-1day",        new HotkeyEntry { Enabled = false, Key = "^+3" } },
+        { "100-1week",       new HotkeyEntry { Enabled = false, Key = "^+4" } },
+        { "cycle",           new HotkeyEntry { Enabled = false, Key = "^+B" } },
+        // Windows Power modes
+        { "power-efficient", new HotkeyEntry { Enabled = false, Key = "^+5" } },
+        { "power-balanced",  new HotkeyEntry { Enabled = false, Key = "^+6" } },
+        { "power-perf",      new HotkeyEntry { Enabled = false, Key = "^+7" } },
     };
 
     public static SettingsModel Load()
@@ -65,9 +70,10 @@ internal class SettingsModel
                             e.Key = val;
                     }
                 }
-                else if (section == "surface" && key.Equals("aumid", StringComparison.OrdinalIgnoreCase))
+                else if (section == "surface")
                 {
-                    s.SurfaceAumid = val;
+                    if (key.Equals("aumid", StringComparison.OrdinalIgnoreCase))
+                        s.SurfaceAumid = val;
                 }
             }
         }
