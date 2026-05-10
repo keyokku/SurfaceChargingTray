@@ -22,7 +22,8 @@ Both releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** *(latest)* | 2026-05-10 | Adds Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, ARM64 calling-convention crash fix, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. Fully backward-compatible with v1.0.0 settings. |
+| **v1.2.0** *(coming soon)* | — | Charging Mode Scheduler — set a daily time and target charging mode (e.g. switch to *Charge to 100%* at 7am so the device is ready for the day). |
+| **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** *(latest)* | 2026-05-10 | Adds Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. Fully backward-compatible with v1.0.0 settings. |
 | **[v1.0.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.0.0)** | 2026-05-09 | Initial release. Charging-mode tray icon, light/dark theme, configurable hotkeys for the four modes + cycle, auto-start at Windows login, three packages (arm64 / x64 / AHK). |
 
 Full per-release notes: [CHANGELOG.md](CHANGELOG.md).
@@ -79,8 +80,6 @@ Both are safe to delete at any time. If you click something and nothing happens 
 
 **Power modes:** uses `powrprof.dll` directly via P/Invoke (`PowerGetEffectiveOverlayScheme` to read, `PowerSetUserConfiguredACPowerMode` + `PowerSetUserConfiguredDCPowerMode` to write). No process launches, no UI, no admin. The reads run on a 5-second timer so the tray check marks stay in sync if you change Power mode from Windows Settings or if Windows auto-switches on AC/DC transitions.
 
-**Cross-architecture safety:** all `powrprof.dll` calls pass GUIDs by `ref` (pointer), not by value. Microsoft's documented signature is "by value", but on ARM64 Windows the calling convention treats 16-byte structs differently — passing by value triggers an `AccessViolationException`. The `ref` form works on both x64 and ARM64.
-
 > **Tip:** give a charging-mode switch a few seconds — and after you update hotkey settings, watch your taskbar even if you don't see the Surface app window come up. The Surface app activates briefly off-screen and may flash a taskbar entry while it's being driven.
 
 The Surface app's package family name varies between Surface generations (`Microsoft.SurfaceHub_8wekyb3d8bbwe`, `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Both packages auto-detect this on first run via `Get-StartApps` (AHK) or the WinRT `PackageManager` (EXE), so a fresh install on a different Surface model just works.
@@ -106,7 +105,6 @@ Output lands in `dist/<arch>/SurfaceChargingTray.exe` — single-file self-conta
 SurfaceChargingTray/
 ├── README.md         this file
 ├── CHANGELOG.md      per-release notes
-├── FUTURE-IDEAS.md   sketches for upcoming features (e.g. scheduler)
 ├── LICENSE           MIT
 ├── build.ps1         rebuilds the EXE for both architectures
 ├── ahk/              AutoHotkey v2 source (run as-is, no compile)
