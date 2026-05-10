@@ -20,13 +20,13 @@ internal static class SurfaceController
     /// </summary>
     public static SettingsModel? Settings { get; set; }
 
-    private const int SW_HIDE = 0;
+    private const uint SWP_NOMOVE     = 0x0002;
     private const uint SWP_NOSIZE     = 0x0001;
-    private const uint SWP_NOZORDER   = 0x0004;
     private const uint SWP_NOACTIVATE = 0x0010;
     private const uint ASFW_ANY       = 0xFFFFFFFF;
+    // SetWindowPos hWndInsertAfter: HWND_BOTTOM = (HWND)1
+    private static readonly IntPtr HWND_BOTTOM = new(1);
 
-    [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr h, int n);
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(uint dwProcessId);
 
@@ -333,10 +333,49 @@ internal static class SurfaceController
         return match;
     }
 
+    /// <summary>
+    /// Hide the Surface app's window from the user during our automation.
+    ///
+    /// History: previous builds used SetWindowPos(-32000, -32000) + SW_HIDE,
+    /// which works for normal Win32 windows but is unreliable for the
+    /// Surface app (a UWP host that re-positions and re-shows itself
+    /// after launch — our hide flag and offscreen position got overridden
+    /// most of the time, leaving the window visible to the user).
+    ///
+    /// New approach: push to the bottom of the z-order with HWND_BOTTOM.
+    /// As long as the user has any other window open in front (Explorer,
+    /// browser, the tray app's own dialogs, etc. — true for normal usage),
+    /// the Surface app stays hidden behind them. We additionally try to
+    /// move it offscreen as a defensive backup, and call SetWindowPos
+    /// twice with a small delay so any self-restore by the Surface app
+    /// gets clobbered. The user may briefly see the window flash on
+    /// activation before we push it back — accepted UX trade for actually
+    /// staying hidden during the operation.
+    /// </summary>
     private static void HideWindow(IntPtr h)
     {
-        SetWindowPos(h, IntPtr.Zero, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-        ShowWindow(h, SW_HIDE);
+        PushToBack(h);
+        // Re-push after a beat — the Surface app sometimes re-orders
+        // itself to top during its own activation completion.
+        Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            try { PushToBack(h); } catch { }
+            await Task.Delay(300);
+            try { PushToBack(h); } catch { }
+        });
+    }
+
+    private static void PushToBack(IntPtr h)
+    {
+        // Push to back without moving or resizing or activating.
+        SetWindowPos(h, HWND_BOTTOM, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        // Also try to park it offscreen — defensive; some Surface app builds
+        // honour the move, some don't. The z-order push above is what
+        // actually keeps it hidden in either case.
+        SetWindowPos(h, HWND_BOTTOM, -32000, -32000, 0, 0,
+            SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     private static void ExpandIfCollapsed(AutomationElement bcGroup)
