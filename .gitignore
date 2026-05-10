@@ -31,3 +31,6 @@ release-staging/
 # Surface app binary mirror used as decompilation reference only.
 # Microsoft binaries — MUST NOT be redistributed in this public repo.
 v2-prototype/
+
+# Local-only design notes / sketches not meant for the public repo.
+private-notes/

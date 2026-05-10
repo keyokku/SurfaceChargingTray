@@ -26,12 +26,6 @@ settings; no migration steps required.
 
 ### Reliability fixes
 
-- **ARM64 calling-convention crash fix.** Several `powrprof.dll` functions
-  ship with a documented "GUID by value" signature, but on ARM64 Windows
-  P/Invoke marshals 16-byte structs differently than x64 — passing by value
-  triggered an `AccessViolationException` (0xC0000005) inside the function.
-  All Power-mode P/Invoke now uses `ref Guid` (pointer), which works on both
-  architectures.
 - **Memory leak fixes.** Cached the tray icons / error bitmap so the 5-second
   theme tick no longer leaks `HICON` / `HBITMAP` handles over long uptimes.
   Periodic working-set trim keeps Task Manager's "Memory" column slim.
@@ -41,10 +35,8 @@ settings; no migration steps required.
 
 ### AHK package
 
-- Same Power Mode features ported to the AutoHotkey package:
-  three menu items, three hotkey slots, direct `powrprof.dll` calls (no
-  PowerShell hop). Uses the same `ref Guid` pattern via `Buffer` for
-  cross-architecture safety.
+- Same Power Mode features ported to the AutoHotkey package: three menu
+  items, three hotkey slots, direct `powrprof.dll` calls (no PowerShell hop).
 
 ### Compatibility
 
@@ -63,9 +55,6 @@ settings; no migration steps required.
   via `WinVerifyTrust`, so unsigned third-party callers are silently
   rejected. Source code, .proto files, and a full research log are
   preserved for future reference.
-- `FUTURE-IDEAS.md` sketches a Charging Mode Scheduler design (target:
-  v1.2.0) using Windows Task Scheduler with `WakeToRun` so charge-mode
-  switches can fire while the device sleeps.
 
 ---
 
