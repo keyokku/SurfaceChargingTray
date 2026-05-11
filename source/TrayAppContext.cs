@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -35,6 +36,14 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly HotkeyManager _hotkeys = new();
     private readonly SynchronizationContext _ui;
 
+    // Watches surface-state.json for changes from outside this process —
+    // most importantly, scheduled-task CLI invocations that update the cache
+    // while the tray is idle. Without this, a 7am scheduled "switch to 100%"
+    // would leave the running tray showing the old mode until the user
+    // clicked Refresh manually. Fired through _ui.Post so the menu update
+    // hops back to the UI thread.
+    private FileSystemWatcher? _stateWatcher;
+
     // Icons + bitmap loaded once and re-used. Re-creating them every theme
     // tick (5s) leaks HICON / HBITMAP handles until the next GC cycle and
     // drifts working set up over long uptimes.
@@ -55,6 +64,10 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly ToolStripMenuItem _mi80;
     private readonly ToolStripMenuItem _mi100Day;
     private readonly ToolStripMenuItem _mi100Week;
+    // Schedule item — shows the saved time + mode in the label
+    // (e.g. "Schedule: 21:00 — 80%" or "Schedule: (not set)") and opens
+    // the Settings dialog directly on the Schedule tab.
+    private readonly ToolStripMenuItem _miSchedule;
     private readonly ToolStripMenuItem _miPower;       // submenu parent
     private readonly ToolStripMenuItem _miPowerEff;
     private readonly ToolStripMenuItem _miPowerBal;
@@ -62,7 +75,6 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly ToolStripMenuItem _miRefresh;
     private readonly ToolStripMenuItem _miOpenApp;
     private readonly ToolStripMenuItem _miSettings;
-    private readonly ToolStripMenuItem _miAutoStart;
     private readonly ToolStripMenuItem _miShowError;
     private readonly ToolStripMenuItem _miExit;
 
@@ -95,6 +107,8 @@ internal sealed class TrayAppContext : ApplicationContext
         _mi100Day    = new ToolStripMenuItem("Charge to 100% (1 day)",  (Image?)null, (s, e) => StartSetMode("100", "1day"));
         _mi100Week   = new ToolStripMenuItem("Charge to 100% (1 week)", (Image?)null, (s, e) => StartSetMode("100", "1week"));
 
+        _miSchedule  = new ToolStripMenuItem("Schedule: (not set)",     (Image?)null, (s, e) => ShowSettings(openOnScheduleTab: true));
+
         _miPowerEff  = new ToolStripMenuItem("Best power efficiency",   (Image?)null, (s, e) => SetPower(PowerMode.Mode.Efficient));
         _miPowerBal  = new ToolStripMenuItem("Balanced",                (Image?)null, (s, e) => SetPower(PowerMode.Mode.Balanced));
         _miPowerPerf = new ToolStripMenuItem("Best performance",        (Image?)null, (s, e) => SetPower(PowerMode.Mode.Performance));
@@ -104,18 +118,18 @@ internal sealed class TrayAppContext : ApplicationContext
         _miRefresh   = new ToolStripMenuItem("Refresh status",          (Image?)null, (s, e) => StartRefresh());
         _miOpenApp   = new ToolStripMenuItem("Open Surface app",        (Image?)null, (s, e) => OpenSurfaceApp());
         _miSettings  = new ToolStripMenuItem("Settings...",             (Image?)null, (s, e) => ShowSettings());
-        _miAutoStart = new ToolStripMenuItem("Run at Windows login",    (Image?)null, (s, e) => ToggleAutoStart());
         _miShowError = new ToolStripMenuItem("Show last error",         (Image?)null, (s, e) => ShowLastError());
         _miExit      = new ToolStripMenuItem("Exit",                    (Image?)null, (s, e) => ExitThread());
 
-        // Layout: charging modes [---] Power mode [---] secondary actions
+        // Layout: charging modes [---] Schedule, Power mode [---] secondary actions
         _menu.Items.AddRange(new ToolStripItem[]
         {
             _miAdaptive, _mi80, _mi100Day, _mi100Week,
             new ToolStripSeparator(),
+            _miSchedule,
             _miPower,
             new ToolStripSeparator(),
-            _miRefresh, _miOpenApp, _miSettings, _miAutoStart, _miShowError, _miExit
+            _miRefresh, _miOpenApp, _miSettings, _miShowError, _miExit
         });
 
         // Hide the Power-mode submenu entirely on systems that don't expose
@@ -134,7 +148,7 @@ internal sealed class TrayAppContext : ApplicationContext
         ApplyMenuTheme();
         UpdateMenuFromCache();
         UpdatePowerModeChecks();
-        UpdateAutoStartCheck();
+        UpdateScheduleMenuLabel();
         ApplyHotkeys();
 
         // Auto-discovery on first launch: if the UIA cache is empty, fire a
@@ -144,6 +158,29 @@ internal sealed class TrayAppContext : ApplicationContext
         // refresh completes hits Layer 1 (cached AutomationId) instead of
         // doing an expensive Name search across 19 localized variants.
         if (string.IsNullOrEmpty(_settings.BatteryCardId)) StartRefresh();
+
+        // Watch surface-state.json for external writes — primarily by
+        // scheduled-task CLI invocations of our exe. When they update the
+        // cache, refresh the tray menu's check marks immediately so the
+        // user never sees a stale state after a scheduled mode change.
+        try
+        {
+            var dir = Path.GetDirectoryName(StateStore.CachePath);
+            var name = Path.GetFileName(StateStore.CachePath);
+            if (!string.IsNullOrEmpty(dir) && !string.IsNullOrEmpty(name))
+            {
+                _stateWatcher = new FileSystemWatcher(dir, name)
+                {
+                    NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.Size,
+                    EnableRaisingEvents = true
+                };
+                FileSystemEventHandler handler = (_, _) =>
+                    _ui.Post(_ => { try { UpdateMenuFromCache(); } catch { } }, null);
+                _stateWatcher.Changed += handler;
+                _stateWatcher.Created += handler;
+            }
+        }
+        catch { /* watcher is a nice-to-have; tray still works without it */ }
 
         _themeTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         _themeTimer.Tick += (s, e) =>
@@ -357,6 +394,103 @@ internal sealed class TrayAppContext : ApplicationContext
     /// <summary>NotifyIcon.Text has a 127-char limit; clip just in case.</summary>
     private static string ClampTooltip(string s) => s.Length > 63 ? s[..63] : s;
 
+    // ---- Simulated-sleep scheduler ------------------------------------
+
+    /// <summary>
+    /// Enter the fake-sleep test: dim the screen, drop into Best power
+    /// efficiency, prevent the system/display from sleeping, and show
+    /// a fullscreen black overlay on every monitor. Dismissed by any
+    /// mouse click or key press inside the overlay — mouse-move alone
+    /// will NOT dismiss it (pen/cat-drift safety).
+    ///
+    /// This is the prototype that replaces the scheduled-wake approach
+    /// (which can't drive the Surface app while UWP defers rendering on
+    /// a sleeping / screen-off / locked device).
+    /// </summary>
+    /// <summary>
+    /// Hotkey handler for "schedule-toggle". Acts as on/off for the
+    /// simulated-sleep scheduler:
+    ///   active  -> exit (manual dismiss equivalent)
+    ///   not active -> read schedule from settings, compute delay until the
+    ///                 next occurrence of ScheduleTime, enter simulated sleep
+    ///                 with that scheduled fire. If no ScheduleTime is set,
+    ///                 enter simulated sleep without a scheduled fire (the
+    ///                 hotkey doubles as a "do not disturb" toggle).
+    /// </summary>
+    private void ToggleScheduledFakeSleep()
+    {
+        if (FakeSleepMode.IsActive)
+        {
+            FakeSleepMode.Exit();
+            return;
+        }
+        EnterScheduledFakeSleep();
+    }
+
+    private void EnterScheduledFakeSleep()
+    {
+        // Re-load settings — the user may have changed the schedule between
+        // tray launch and now.
+        var s = SettingsModel.Load();
+        int delay = 0;
+        string? mode = null;
+        string? duration = null;
+
+        if (!string.IsNullOrEmpty(s.ScheduleTime) && !string.IsNullOrEmpty(s.ScheduleMode))
+        {
+            delay = SecondsUntilNextOccurrence(s.ScheduleTime!);
+            if (delay > 0)
+            {
+                mode = s.ScheduleMode;
+                duration = s.ScheduleDuration;
+            }
+        }
+
+        string? err;
+        try
+        {
+            err = FakeSleepMode.Enter(
+                scheduledMode:     mode,
+                scheduledDuration: duration,
+                delaySeconds:      delay,
+                autoExitAfterFire: s.ScheduleAutoExit);
+        }
+        catch (Exception ex)
+        {
+            ReportError("Could not enter simulated sleep: " + ex.Message);
+            return;
+        }
+        if (err != null)
+        {
+            // Use a modal dialog rather than a balloon-tip / toast — Windows
+            // Focus Assist (Do Not Disturb) suppresses NotifyIcon balloons,
+            // and refusing to enter fake-sleep silently is a worse failure
+            // than the brief interruption a MessageBox causes.
+            MessageBox.Show(err, "Surface charging tray",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    /// <summary>
+    /// Given a "HH:MM" target time, return the number of seconds until the
+    /// NEXT occurrence of that wall-clock time. If the time has already
+    /// passed today, returns the delay until tomorrow at that time.
+    /// </summary>
+    private static int SecondsUntilNextOccurrence(string hhmm)
+    {
+        var parts = hhmm.Split(':');
+        if (parts.Length != 2) return 0;
+        if (!int.TryParse(parts[0], out int hh) || !int.TryParse(parts[1], out int mm))
+            return 0;
+        if (hh < 0 || hh > 23 || mm < 0 || mm > 59) return 0;
+
+        var now = DateTime.Now;
+        var target = new DateTime(now.Year, now.Month, now.Day, hh, mm, 0);
+        if (target <= now) target = target.AddDays(1);
+        var span = target - now;
+        return (int)Math.Min(span.TotalSeconds, int.MaxValue);
+    }
+
     // ---- Other actions -------------------------------------------------
 
     private static void OpenSurfaceApp()
@@ -365,16 +499,17 @@ internal sealed class TrayAppContext : ApplicationContext
         catch { }
     }
 
-    private void ShowSettings()
+    private void ShowSettings(bool openOnScheduleTab = false)
     {
         try
         {
-            using var form = new SettingsForm(_settings);
+            using var form = new SettingsForm(_settings, openOnScheduleTab);
             form.Saved = () =>
             {
                 _settings = SettingsModel.Load();
                 ApplyHotkeys();
-                _icon.ShowBalloonTip(2000, "Surface charging tray", "Hotkeys updated.", ToolTipIcon.Info);
+                UpdateScheduleMenuLabel();
+                _icon.ShowBalloonTip(2000, "Surface charging tray", "Settings updated.", ToolTipIcon.Info);
             };
             form.ShowDialog();
             TrimWorkingSet();   // WPF/WinForms layout pages aren't needed after close
@@ -385,29 +520,33 @@ internal sealed class TrayAppContext : ApplicationContext
         }
     }
 
-    private void ToggleAutoStart()
+    /// <summary>
+    /// Refresh the tray menu's "Schedule: ..." label to reflect what's
+    /// currently saved in settings. Called on construction and after every
+    /// Settings save. No live count-down — the label shows the saved
+    /// configuration; the actual next-occurrence math happens when the
+    /// schedule-toggle hotkey is pressed.
+    /// </summary>
+    private void UpdateScheduleMenuLabel()
     {
-        try
-        {
-            if (AutoStart.IsInstalled())
-            {
-                AutoStart.Uninstall();
-                _icon.ShowBalloonTip(2000, "Surface charging tray", "Auto-start disabled.", ToolTipIcon.Info);
-            }
-            else
-            {
-                AutoStart.Install();
-                _icon.ShowBalloonTip(2000, "Surface charging tray", "Will start with Windows.", ToolTipIcon.Info);
-            }
-            UpdateAutoStartCheck();
-        }
-        catch (Exception ex)
-        {
-            ReportError("Auto-start toggle failed: " + ex.Message);
-        }
+        _miSchedule.Text = "Schedule: " + FormatScheduleLabel(_settings);
     }
 
-    private void UpdateAutoStartCheck() => _miAutoStart.Checked = AutoStart.IsInstalled();
+    private static string FormatScheduleLabel(SettingsModel s)
+    {
+        if (string.IsNullOrEmpty(s.ScheduleTime) || string.IsNullOrEmpty(s.ScheduleMode))
+            return "(not set)";
+        string modeText = s.ScheduleMode switch
+        {
+            "adaptive" => "Adaptive",
+            "80"       => "80%",
+            "100" when s.ScheduleDuration == "1week" => "100% 1w",
+            "100" when s.ScheduleDuration == "1day"  => "100% 1d",
+            "100"      => "100%",
+            _          => s.ScheduleMode!
+        };
+        return $"{s.ScheduleTime} — {modeText}";  // em-dash separator
+    }
 
     // ---- Hotkeys -------------------------------------------------------
 
@@ -441,7 +580,8 @@ internal sealed class TrayAppContext : ApplicationContext
             { "cycle",     () => HotkeyTriggered(() => CycleMode())                      },
             { "power-efficient", () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Efficient))   },
             { "power-balanced",  () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Balanced))    },
-            { "power-perf",      () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Performance)) }
+            { "power-perf",      () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Performance)) },
+            { "schedule-toggle", () => HotkeyTriggered(() => ToggleScheduledFakeSleep())           }
         };
         var failures = new List<string>();
         foreach (var (action, h) in _settings.Hotkeys)
@@ -477,6 +617,11 @@ internal sealed class TrayAppContext : ApplicationContext
             _trimTimer.Stop();
             _trimTimer.Dispose();
             _hotkeys.Dispose();
+            if (_stateWatcher != null)
+            {
+                _stateWatcher.EnableRaisingEvents = false;
+                _stateWatcher.Dispose();
+            }
             // Drop the icon reference before disposing _icon's source bitmaps,
             // so NotifyIcon doesn't hold a dangling pointer.
             _icon.Visible = false;

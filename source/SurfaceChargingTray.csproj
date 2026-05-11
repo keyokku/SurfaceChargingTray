@@ -11,8 +11,8 @@
     <ApplicationIcon>Resources\plug-white.ico</ApplicationIcon>
     <RootNamespace>SurfaceChargingTray</RootNamespace>
     <AssemblyName>SurfaceChargingTray</AssemblyName>
-    <Version>1.1.1</Version>
-    <FileVersion>1.1.1.0</FileVersion>
+    <Version>1.2.0</Version>
+    <FileVersion>1.2.0.0</FileVersion>
     <Product>Surface Charging Tray</Product>
     <Authors>Keyokku</Authors>
   </PropertyGroup>
@@ -27,6 +27,13 @@
     <EmbeddedResource Include="Resources\error-red.ico">
       <LogicalName>error-red.ico</LogicalName>
     </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- WMI access (WmiMonitorBrightness/WmiMonitorBrightnessMethods) used
+         by FakeSleepMode to dim the screen to minimum. Not in the
+         framework default for .NET 8 — explicit package required. -->
+    <PackageReference Include="System.Management" Version="8.0.0" />
   </ItemGroup>
 
 </Project>

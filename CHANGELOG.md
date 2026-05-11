@@ -5,6 +5,81 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.2.0 — 2026-05-11
+
+Charging-mode scheduler. Set a daily time and a target charging mode and the
+tool flips it overnight on its own — no Windows Task Scheduler, no waking
+the device, no UI flash.
+
+### What's new
+
+- **Charging-mode scheduler with "simulated sleep"** — set a mode + a time
+  (e.g. *Charge to 100% (1 day)* at `05:30`), bind a hotkey, and press the
+  hotkey before bed. The tool covers every monitor with a fullscreen black
+  overlay, drops brightness to 0, sets Windows Power mode to *Best
+  efficiency*, and holds `SetThreadExecutionState(SYSTEM | DISPLAY)` so
+  Windows treats the device as awake without modifying the user's Sleep /
+  Screen-off timeouts. At the scheduled time the Surface app's charging
+  mode is changed in the background while the overlay stays up. See
+  [Charging-mode scheduler](README.md#charging-mode-scheduler-how-it-works)
+  in the README for the full why-and-how.
+- **After-fire behavior options:**
+  - *Stay in simulated sleep* — overlay stays until you click or press a key.
+  - *Exit simulated sleep and allow real sleep timeouts* — overlay tears
+    down, brightness restores, and Windows' actual Sleep / Screen-off
+    timers fire immediately. The device falls into real sleep on its own
+    after the charging mode has switched.
+- **Settings dialog with Schedule tab.** Charging mode dropdown, duration
+  dropdown (for 100%), hour/minute dropdowns (no free-text input — can't
+  enter an invalid time), Clear link, after-fire radio buttons, dedicated
+  schedule-toggle hotkey row. Inline validation: incomplete time selection
+  greys out the Save button and shows a red status line.
+- **Picking the hour auto-fills minute to `:00`** for one-click on-the-hour
+  scheduling.
+- **Tray menu** gets a *Schedule* item above the Power mode submenu showing
+  the saved schedule (e.g. `Schedule: 05:30 — 100% 1d` or `Schedule: (not set)`).
+  Click it to jump straight to the Schedule tab.
+- **Plugged-in guard.** Refuses to enter simulated sleep on battery
+  (would drain the battery while the device is held active). Shows a modal
+  warning dialog rather than a balloon-tip toast, so Windows Focus Assist /
+  Do Not Disturb cannot suppress the notification.
+- **Crash recovery.** Brightness and Power-mode originals are persisted to
+  a small JSON file before mutation; if the tray crashes mid-simulated-sleep,
+  next launch silently restores them.
+- **"Run at Windows login" moved into the Settings dialog** (Hotkeys tab).
+  Previously a tray-menu toggle.
+
+### Reliability and cleanup
+
+- Removed dev / prototype tray menu items used during v1.2.0 development.
+- Removed Windows Task Scheduler installer code — the simulated-sleep
+  scheduler is in-process and replaces it.
+- Trimmed verbose `[INFO]` logging so a clean overnight run only writes a
+  handful of log lines (start, scheduled-fire armed, scheduled-fire result).
+
+### No AHK package this release
+
+The AHK package is not built for v1.2.0 and is no longer maintained — the
+simulated-sleep mechanic relies on Windows APIs (overlay rendering, WMI
+brightness control, `SetThreadExecutionState`, multi-monitor topmost form
+handling) that aren't practical to implement in AutoHotkey. As noted in
+v1.1.1, the `.exe` builds had already reached feature parity and beyond
+for every supported architecture. Existing AHK users can continue running
+v1.1.1 indefinitely; v1.2.0+ features are `.exe` only.
+
+### Distribution
+
+- Framework-dependent single-file builds (~25 MB each, down from the
+  ~70 MB self-contained builds of v1.0–v1.1.x). Requires .NET 8 Desktop
+  Runtime — Windows offers a direct download link if it's missing.
+
+### Compatibility
+
+Same OS / device requirements as v1.1.1. The scheduler requires the
+device to be plugged in.
+
+---
+
 ## v1.1.1 — 2026-05-10
 
 Reliability and internationalization patch. Fully backward-compatible

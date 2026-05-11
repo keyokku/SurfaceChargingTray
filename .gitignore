@@ -34,3 +34,6 @@ v2-prototype/
 
 # Local-only design notes / sketches not meant for the public repo.
 private-notes/
+
+# Local working-state backups for iteration safety; never published
+working-snapshots/

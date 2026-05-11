@@ -5,12 +5,25 @@ namespace SurfaceChargingTray;
 internal static class Program
 {
     [STAThread]
-    static void Main()
+    static int Main(string[] args)
     {
+        // CLI mode: --set-mode runs headlessly (no tray, no UI), executes the
+        // mode change, exits with 0 on success / non-zero on failure. Used by
+        // the v1.2.0+ Charging Mode Scheduler — Windows Task Scheduler invokes
+        // us with these args at the user's chosen time.
+        //
+        // Important: bypass the single-instance mutex. The user's tray is
+        // probably already running when a scheduled task fires; we do NOT
+        // want the CLI invocation to no-op silently because the mutex is
+        // taken. UI Automation is fine with two processes hitting the
+        // Surface app sequentially.
+        if (CliMode.IsCliInvocation(args))
+            return CliMode.Run(args);
+
         // Single-instance guard so a second launch silently no-ops.
         using var mutex = new Mutex(true,
             "SurfaceChargingTray-{B7E2D4F0-7A1E-4F0B-9C8F-1D5A2C9E4B6A}", out bool created);
-        if (!created) return;
+        if (!created) return 0;
 
         // Catch every unhandled exception we can and write a crash log,
         // instead of letting WinForms' default ThreadExceptionDialog (which
@@ -41,7 +54,14 @@ internal static class Program
         }
         catch { }
 
+        // If a previous run crashed mid-fake-sleep, restore the user's
+        // brightness and Power mode before the tray comes up. Silent no-op
+        // if no recovery file is present.
+        try { FakeSleepMode.RestoreOnStartup(); }
+        catch (Exception ex) { Logger.Crash("FakeSleepMode.RestoreOnStartup", ex); }
+
         Application.Run(new TrayAppContext());
+        return 0;
     }
 
     static void HandleCrash(string source, Exception? ex)

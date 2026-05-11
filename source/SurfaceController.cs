@@ -20,6 +20,19 @@ internal static class SurfaceController
     /// </summary>
     public static SettingsModel? Settings { get; set; }
 
+    /// <summary>
+    /// Set true by CliMode at startup so AcquireSurfaceWindow skips the
+    /// HideWindow push-to-back. Reason: when the user's screen is locked
+    /// (the supported "schedule fires while you're away" pattern), UWP
+    /// defers rendering of windows that aren't visible — pushing the
+    /// Surface app to the back of z-order makes its visual tree never
+    /// build, which makes the UIA query for "Battery & charging" find
+    /// nothing. Letting the window come up normally lets UWP paint, the
+    /// tree populates, the lookup succeeds. The user can't see anything
+    /// anyway because the screen is off.
+    /// </summary>
+    public static bool SkipWindowHide { get; set; }
+
     private const uint SWP_NOMOVE     = 0x0002;
     private const uint SWP_NOSIZE     = 0x0001;
     private const uint SWP_NOACTIVATE = 0x0010;
@@ -29,6 +42,15 @@ internal static class SurfaceController
 
     [DllImport("user32.dll")] private static extern bool SetWindowPos(IntPtr h, IntPtr a, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] private static extern bool AllowSetForegroundWindow(uint dwProcessId);
+
+    // SetThreadExecutionState — asks Windows to keep the device in a
+    // power state suitable for our work. Used during scheduled wake to
+    // promote Modern Standby into full S0 so UWP launches actually work.
+    [DllImport("kernel32.dll")] private static extern uint SetThreadExecutionState(uint flags);
+    private const uint ES_CONTINUOUS       = 0x80000000;
+    private const uint ES_SYSTEM_REQUIRED  = 0x00000001;
+    private const uint ES_DISPLAY_REQUIRED = 0x00000002;
+    private const uint ES_AWAYMODE_REQUIRED = 0x00000040;
 
     /// <summary>
     /// Errors from the inner attempt that should be retried automatically.
@@ -139,6 +161,11 @@ internal static class SurfaceController
         {
             // Safety net for any path that didn't already close+dispose.
             proc?.Dispose();
+            // Release any wake-state request set by AcquireSurfaceWindow so
+            // the device can resume normal sleep behaviour. ES_CONTINUOUS
+            // alone (no other flags) clears all prior requests. Safe to
+            // call even if no request was set.
+            try { SetThreadExecutionState(ES_CONTINUOUS); } catch { }
         }
     }
 
@@ -284,15 +311,50 @@ internal static class SurfaceController
         // implicitly puts our process in the foreground.)
         AllowSetForegroundWindow(ASFW_ANY);
 
+        // Promote Modern Standby into full S0 active state if the device
+        // is partially asleep (e.g., a scheduled task fired during sleep
+        // and woke us into a throttled context). Without this, UWP launches
+        // and the desktop session can stay suspended, which makes the
+        // Surface app fail to come up at all. ES_CONTINUOUS keeps the
+        // request alive across our subsequent UIA work; we clear it in
+        // the cleanup path. Best-effort — if this call fails, the existing
+        // 30s wait below still gives the device a chance to wake naturally.
+        try { SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED); } catch { }
+
+        // Diagnostic: log session + what's already in the process list,
+        // so when wake-context launches fail we can see whether the process
+        // exists at all and what its window title was at the time.
+        try
+        {
+            var sid = Process.GetCurrentProcess().SessionId;
+            Logger.Error($"[INFO] AcquireSurfaceWindow: SessionId={sid}, AUMID={Aumid}");
+            Logger.Error($"[INFO] AcquireSurfaceWindow: Launching now");
+        }
+        catch { }
+
         UwpLauncher.Launch(Aumid);
 
-        var deadline = DateTime.Now.AddSeconds(10);
+        // 30s rather than the previous 10s. UWP cold-launch from a
+        // suspended Modern Standby state legitimately takes longer than
+        // from active state. Tray-click invocations still typically
+        // resolve in <2s; the longer budget only matters for wake-context.
+        const int LaunchTimeoutSeconds = 30;
+        var deadline = DateTime.Now.AddSeconds(LaunchTimeoutSeconds);
+        int diagTick = 0;
         while (DateTime.Now < deadline)
         {
             var p = FindSurface();
             if (p != null)
             {
-                HideWindow(p.MainWindowHandle);
+                Logger.Error($"[INFO] AcquireSurfaceWindow: Surface found after {(DateTime.Now - deadline.AddSeconds(-LaunchTimeoutSeconds)).TotalSeconds:F1}s, PID={p.Id}");
+                if (!SkipWindowHide)
+                {
+                    HideWindow(p.MainWindowHandle);
+                }
+                else
+                {
+                    Logger.Error("[INFO] AcquireSurfaceWindow: skipping HideWindow (CLI mode — letting UWP paint the tree)");
+                }
                 // Small settle so the UIA tree has time to populate before
                 // the caller starts searching it. Especially helps on the
                 // hotkey path where activation happens in a less privileged
@@ -301,8 +363,51 @@ internal static class SurfaceController
                 return (p, true);
             }
             Thread.Sleep(50);
+            // Every ~3 seconds, dump candidate processes so we can see
+            // what's there. Cheap; only fires during the launch wait, and
+            // gives us actual data when the find fails.
+            if (++diagTick % 60 == 0)
+            {
+                try { LogCandidateProcesses(diagTick / 60); }
+                catch { }
+            }
         }
-        throw new Exception("Surface app didn't launch within 10 seconds. Is the Surface app installed and working?");
+        throw new Exception($"Surface app didn't launch within {LaunchTimeoutSeconds} seconds. Is the Surface app installed and working?");
+    }
+
+    /// <summary>
+    /// Enumerates processes whose name OR window title hints at the Surface
+    /// app, so when the find loop times out the log captures what processes
+    /// actually were in flight. Helps debug wake-from-sleep failures where
+    /// the process exists but doesn't match our title==\"Surface\" check yet.
+    /// </summary>
+    private static void LogCandidateProcesses(int tick)
+    {
+        var lines = new System.Text.StringBuilder();
+        lines.Append($"[INFO] AcquireSurfaceWindow tick #{tick}: candidates: ");
+        int count = 0;
+        foreach (var p in Process.GetProcesses())
+        {
+            try
+            {
+                var name  = p.ProcessName ?? "";
+                var title = p.MainWindowTitle ?? "";
+                bool isCandidate =
+                    name.Contains("Surface", StringComparison.OrdinalIgnoreCase) ||
+                    title.Contains("Surface", StringComparison.OrdinalIgnoreCase) ||
+                    name.Contains("ApplicationFrameHost", StringComparison.OrdinalIgnoreCase);
+                if (isCandidate)
+                {
+                    if (count > 0) lines.Append("; ");
+                    lines.Append($"PID={p.Id} name=\"{name}\" title=\"{title}\" hwnd={(p.MainWindowHandle != IntPtr.Zero ? "yes" : "no")}");
+                    count++;
+                }
+            }
+            catch { }
+            finally { p.Dispose(); }
+        }
+        if (count == 0) lines.Append("(none)");
+        Logger.Error(lines.ToString());
     }
 
     /// <summary>
