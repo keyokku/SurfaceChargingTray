@@ -9,7 +9,8 @@ https://github.com/user-attachments/assets/5aef04e3-2bf7-4bb8-b287-0b3265136ce2
 A small Windows system-tray utility that switches the Microsoft Surface app's
 **charging mode** (Adaptive / Limit to 80% / Charge to 100% temporarily) — and
 the Windows 11 **Power mode** (Best efficiency / Balanced / Best performance) —
-without you having to open Settings or the Surface app yourself.
+without you having to open Settings or the Surface app yourself. Now with a
+built-in scheduler so you can have charging mode flip overnight on its own.
 
 > **Note** — the charging-mode side drives the modern Surface app's three-mode
 > *Battery & charging* UI. Most Surface devices from Pro 8 / Laptop 5 onward
@@ -25,14 +26,27 @@ without you having to open Settings or the Surface app yourself.
 > of the Surface app also doesn't show the card, it's almost certainly this
 > bug rather than something this tool is doing.
 
+## Features
+
+- Tray icon and live status
+- Tray menu or configurable keyboard shortcuts
+- Quick-change Surface charging modes (Adaptive, 80%, 100%)
+- **Schedule a charge-mode change during "sleep"** (e.g. flip 80% → 100% in the morning)
+- Quick-change Windows Power mode (Performance, Balanced, Efficiency)
+- Run at Windows login
+- Auto-detects your language localization, Surface app UI, and current charging mode
+- Hides the Surface app during operation
+- Persistent error log next to the .exe
+- *Surface charging modes cannot be changed while the device is asleep / locked — see the scheduler below for the workaround*
+
 ## Versions
 
 All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **v1.2.0** *(coming soon)* | — | Charging Mode Scheduler — set a daily time and target charging mode (e.g. switch to *Charge to 100%* at 7am so the device is ready for the day). |
-| **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** *(latest)* | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
+| **[v1.2.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.0)** *(latest)* | 2026-05-11 | Charging-mode scheduler. Press a hotkey before bed; the device stays active behind a black overlay until your set time, flips charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler-how-it-works) below. **No AHK package this release — `.exe` builds only.** |
+| **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
 | **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** | 2026-05-10 | Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. |
 | **[v1.0.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.0.0)** | 2026-05-09 | Initial release. Charging-mode tray icon, light/dark theme, configurable hotkeys for the four modes + cycle, auto-start at Windows login, three packages (arm64 / x64 / AHK). |
 
@@ -40,95 +54,125 @@ Full per-release notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Download
 
-Get the latest from the [Releases](../../releases) tab. Three packages each release:
+Get the latest from the [Releases](../../releases) tab. Two packages this release:
 
-| Package | Use it on | Install needed |
-|---|---|---|
-| `SurfaceChargingTray-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon Surfaces via Windows on ARM emulation. | None |
-| `SurfaceChargingTray-arm64.zip` | Snapdragon Surfaces, native build (Pro 12, Pro X, Pro 11/Laptop 7 Snapdragon variants) | None |
-| `SurfaceChargingTray-ahk.zip` | Universal — any Surface | [AutoHotkey v2](https://www.autohotkey.com/) (free, ~5 MB) |
+| Package | Use it on |
+|---|---|
+| `SurfaceChargingTray-v1.2.0-arm64.zip` | Snapdragon Surfaces, native build (Pro 12, Pro X, Pro 11 / Laptop 7 Snapdragon variants) |
+| `SurfaceChargingTray-v1.2.0-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon Surfaces via Windows on ARM emulation. |
 
 To find your CPU: **Settings → System → About → System type**.
 
-To run: unzip anywhere, double-click `SurfaceChargingTray.exe` (or `surface-tray.ahk`). The tray icon appears immediately. No install, no admin, fully portable.
+**Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime)** (~55 MB, one-time install). If you don't have it yet, Windows pops up a dialog with a direct download link when you first launch the app. Many other modern Windows apps (PowerToys, Files, Windows Terminal) already use .NET 8, so you may already have it.
 
-> **AHK package being phased out.** Native arm64 + x64 `.exe` builds now cover every supported Surface without needing AutoHotkey installed and are ahead on features (auto-discovery, ID caching, coalescing queue). The AHK package will continue to receive critical fixes for a while, but new features land in the `.exe` only. If you have a working setup, no rush — but new users should prefer the matching architecture's `.exe`.
+To run: unzip anywhere, double-click `SurfaceChargingTray.exe`. The tray icon appears immediately. No install, no admin, fully portable.
+
+> **No AHK package this release.** The AutoHotkey version is being phased out
+> as announced in v1.1.1. The simulated-sleep scheduler depends on Windows
+> APIs (overlay rendering, brightness control, execution-state locking, WMI)
+> that aren't practical to implement in AHK. Existing AHK users can continue
+> running v1.1.1; v1.2.0+ features are `.exe` only.
 
 ## Compatibility
 
-| Requirement | Charging modes | Power mode (v1.1.0+) |
-|---|---|---|
-| Operating system | Windows 10 build 19041 (20H1, May 2020) or newer | Windows 10 1809 (October 2018) or newer; Windows 11 recommended |
-| Architecture | x64 + ARM64 (native builds for both) | x64 + ARM64 (native builds for both) |
-| Surface device | Any with the modern *Battery & charging* UI (Pro 8 / Laptop 5 onward) | Any Windows device — does not require a Surface |
-| Admin rights | None | None |
+| Requirement | Charging modes | Power mode | Scheduler |
+|---|---|---|---|
+| Operating system | Windows 10 build 19041 (May 2020) or newer | Windows 10 1809 (Oct 2018) or newer; Win 11 recommended | Windows 10 build 19041 or newer |
+| .NET runtime | .NET 8 Desktop Runtime (free, ~55 MB) | same | same |
+| Architecture | x64 + ARM64 (native builds for both) | same | same |
+| Surface device | Any with the modern *Battery & charging* UI (Pro 8 / Laptop 5 onward) | Any Windows device — does not require a Surface | Same as charging |
+| Admin rights | None | None | None |
+| Plugged in | Recommended | — | **Required** (refuses on battery) |
 
-**Tested on:** Surface Pro 12 (Snapdragon) — native ARM64 build and x64 build under Prism.
+**Tested on:** Surface Pro 12 (Snapdragon) — native ARM64 build, overnight scheduler run.
 
-Should work on any Surface whose Surface app exposes the three-mode charging UI. Verified Surface app package families: `Microsoft.SurfaceHub`, `MicrosoftCorporationII.MicrosoftSurface`. Other package family names auto-detect on first launch via the Start menu listing.
+## Charging-mode scheduler — how it works
 
-## Features
+### The problem
 
-- **Charging mode tray menu** — Adaptive / Limit to 80% / Charge to 100% (1 day / 1 week). Check mark shows the active mode. Plug icon follows your light/dark theme.
-- **Windows Power mode submenu** *(v1.1.0+)* — Best power efficiency / Balanced / Best performance. Sub-millisecond, no admin. On Surface devices that expose separate "Plugged in" / "On battery" Power mode dropdowns, both sides are set together so your choice persists across plug-in/unplug. For per-state granularity, use Windows Settings.
-- **Configurable global hotkeys** for every mode (charging or Power). Off by default. Suggested combos: `Ctrl+Shift+1/2/3/4` for charging modes, `Ctrl+Shift+B` for "cycle through charging modes", `Ctrl+Shift+5/6/7` for Power modes. Avoid `Alt+Shift` (input-language switcher) and `Win+digit` (taskbar slots).
-- **Refresh status** — re-reads the current mode from the Surface app, useful if you toggled it manually.
-- **Open Surface app** — direct shortcut.
-- **Run at Windows login** — toggle: places a shortcut in your Startup folder (per-user, no admin).
-- **Show last error** — pops up the most recent failure if a toggle didn't work.
+Surface charging modes can only be changed through the Surface app's UI, and the Surface app **only renders that UI while the device is actually awake and active**. If the device is asleep, locked, or has its screen off, Windows defers the UWP app's rendering and our tool can't drive it. So a naive scheduled task that fires at 5 AM while the device is asleep simply doesn't work — the Surface app is dormant.
+
+### The workaround: "simulated sleep"
+
+When you toggle the schedule hotkey before bed, the tool enters a **simulated sleep** state instead of letting the device actually sleep:
+
+- A fullscreen black overlay covers every monitor (looks the same as sleep)
+- Screen brightness drops to 0
+- Windows Power mode switches to *Best efficiency*
+- `SetThreadExecutionState` flag is held — Windows treats the device as "active" and skips its normal Sleep / Screen-off timers, but **without permanently editing your power settings** (the override auto-reverts when simulated sleep exits)
+
+To Windows, the device is still awake and rendering, so the Surface app stays drivable. To you, the device looks asleep.
+
+At your scheduled time, the tool flips the charging mode in the background while the overlay stays up. After that, you have two options:
+
+- **Stay in simulated sleep** — the overlay stays black until you click or press a key
+- **Exit simulated sleep + allow real sleep** — the overlay tears down, brightness restores, Windows' actual Sleep / Screen-off timers kick in immediately (since there's been no input for hours). The device falls into real sleep on its own
+
+Either way, your original brightness and Power-mode setting are restored when simulated sleep ends.
+
+### How to use it
+
+1. Right-click the tray icon → **Settings...** → **Schedule** tab
+2. **Charging mode** — pick what you want to switch to (e.g. *Charge to 100% (1 day)*)
+3. **Scheduled time** — set the time it should fire (e.g. `05:30` for early morning)
+4. **After the fire** — pick *Stay in simulated sleep* or *Exit simulated sleep and allow real sleep timeouts* (recommended for overnight charging)
+5. **Toggle hotkey** — enable and set a combo (default: `Ctrl+Shift+T`)
+6. **Save**
+7. **Before bed** — plug in. Press the toggle hotkey. Screen goes black. Walk away
+8. **In the morning** — the device is either in real sleep (if you picked the second option) or still in simulated sleep waiting for you. Either way, charging mode has been switched at your scheduled time. Press any key or click to wake / dismiss
+
+### Caveats
+
+- **Plugged in only.** Simulated sleep keeps the device active, which drains the battery. The tool refuses to enter on battery and shows a dialog warning if you press the hotkey while unplugged.
+- **Don't close the lid / press the power button / Win+L during simulated sleep.** Those are hardware signals that Windows treats as sleep / lock regardless of our flag, and they will take the device out of simulated-sleep state. The charging-mode flip will then fail (Surface app dormant again).
+- **The screen is still technically on** behind the overlay. Brightness is 0 but the panel draws power. This is the trade-off for keeping the Surface app drivable.
+- **No actual user activity is generated.** The mouse cursor doesn't move; Windows just thinks "an app is requesting display attention." If you have software that pings on user idle (e.g. status indicators that say "away after 5 min"), they'll behave as if the device is idle. That's fine.
+- **Crash recovery.** If the tray crashes during simulated sleep, the brightness and Power-mode originals are saved to a small recovery file and restored automatically on the next launch.
 
 ## Logs
 
 Two log files live next to the .exe (so the package stays portable):
 
-- `surface-error.log` — recent operational errors plus a `[INFO] Started v1.1.0.0` heartbeat on each launch. Capped at 500 lines, ISO-8601 timestamped.
+- `surface-error.log` — operational errors plus a `[INFO] Started v1.2.0.0` heartbeat on each launch and scheduled-fire result lines. Capped at 500 lines, ISO-8601 timestamped.
 - `crash.log` — captures unhandled .NET exceptions with full stack traces. Same rotating policy.
 
 Both are safe to delete at any time. If you click something and nothing happens AND no log entry appears, the app died before reaching the click handler — open Windows Event Viewer → Applications and look for an `Application Error` entry naming `SurfaceChargingTray.exe` for the OS-level crash code.
 
-## How it works
+## How charging / Power modes work under the hood
 
-**Charging modes:** the Surface app is the only thing on Windows that exposes the three-mode charging UI, and Microsoft offers no documented API to change it from outside. So this tool briefly opens the Surface app **off-screen**, drives the right radio button on its *Battery & charging* page through Windows [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32), then closes the app. The whole cycle takes a few seconds. If the Surface app is already open when you click a tray menu item, the tool closes and reopens it fresh — that way the *Battery & charging* card is always reachable, even if you'd previously navigated to a different page in the app.
+**Charging modes:** the Surface app is the only thing on Windows that exposes the three-mode charging UI, and Microsoft offers no documented API to change it from outside. So this tool briefly opens the Surface app **off-screen**, drives the right radio button on its *Battery & charging* page through Windows [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32), then closes the app. The whole cycle takes a few seconds.
 
-**Power modes:** uses `powrprof.dll` directly via P/Invoke (`PowerGetEffectiveOverlayScheme` to read, `PowerSetUserConfiguredACPowerMode` + `PowerSetUserConfiguredDCPowerMode` to write). No process launches, no UI, no admin. The reads run on a 5-second timer so the tray check marks stay in sync if you change Power mode from Windows Settings or if Windows auto-switches on AC/DC transitions.
+**Power modes:** uses `powrprof.dll` directly via P/Invoke. No process launches, no UI, no admin. The reads run on a 5-second timer so the tray check marks stay in sync if you change Power mode from Windows Settings or if Windows auto-switches on AC/DC transitions.
 
-> **Tip:** give a charging-mode switch a few seconds — and after you update hotkey settings, watch your taskbar even if you don't see the Surface app window come up. The Surface app activates briefly off-screen and may flash a taskbar entry while it's being driven.
-
-The Surface app's package family name varies between Surface generations (`Microsoft.SurfaceHub_8wekyb3d8bbwe`, `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Both packages auto-detect this on first run via `Get-StartApps` (AHK) or the WinRT `PackageManager` (EXE), so a fresh install on a different Surface model just works.
+The Surface app's package family name varies between Surface generations (`Microsoft.SurfaceHub_8wekyb3d8bbwe`, `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Auto-detected on first run via the WinRT `PackageManager`, so a fresh install on a different Surface model just works.
 
 ## Build from source
 
-The AHK package is plain text — clone the repo and run `ahk/surface-tray.ahk` directly with [AutoHotkey v2](https://www.autohotkey.com/).
-
-The EXE needs the [.NET 8 SDK](https://dotnet.microsoft.com/download):
+Needs the [.NET 8 SDK](https://dotnet.microsoft.com/download):
 
 ```powershell
 git clone https://github.com/keyokku/SurfaceChargingTray
 cd SurfaceChargingTray
-powershell -File build.ps1            # both arm64 + x64
-powershell -File build.ps1 -Arch x64  # just one
+powershell -ExecutionPolicy Bypass -File build.ps1            # both arm64 + x64
+powershell -ExecutionPolicy Bypass -File build.ps1 -Arch x64  # just one
 ```
 
-Output lands in `dist/<arch>/SurfaceChargingTray.exe` — single-file self-contained (~70–75 MB compressed), recipients don't need .NET installed. A handful of WPF native sidecar DLLs ship in the same folder; the package stays fully portable (copy the folder anywhere).
+Output lands in `dist/v1.2.0/<arch>/SurfaceChargingTray.exe` — single-file framework-dependent (~25 MB). Recipients need the .NET 8 Desktop Runtime installed (free, one-time).
 
 ## Repo layout
 
 ```
 SurfaceChargingTray/
-├── README.md         this file
-├── CHANGELOG.md      per-release notes
-├── LICENSE           MIT
-├── build.ps1         rebuilds the EXE for both architectures
-├── ahk/              AutoHotkey v2 source (run as-is, no compile)
-│   ├── surface-tray.ahk
-│   ├── surface-set-mode-hidden.ps1
-│   ├── surface-get-status.ps1
-│   └── *.ico
-├── source/           C# source for the standalone EXE
+├── README.md          this file
+├── CHANGELOG.md       per-release notes
+├── LICENSE            MIT
+├── build.ps1          rebuilds the EXE for both architectures
+├── ahk/               AutoHotkey v2 source from older releases (no longer maintained)
+├── source/            C# source for the standalone EXE
 │   ├── SurfaceChargingTray.csproj
 │   └── *.cs
-└── v2-archive/       abandoned "fast path" research; preserved for future
-                      reference (see RESEARCH-NOTES.md inside)
+└── v2-archive/        abandoned "fast path" research; preserved for future
+                       reference (see RESEARCH-NOTES.md inside)
 ```
 
 ## Contributing

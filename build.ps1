@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $root 'source'
-$dist = Join-Path $root 'dist'
+$dist = Join-Path $root 'dist\v1.2.0'
 
 # Stop a running tray so the .exe isn't locked.
 Get-Process -Name SurfaceChargingTray -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -26,11 +26,12 @@ foreach ($rid in $rids) {
     $outDir   = Join-Path $dist $archName
     Write-Host "Building $rid -> $outDir"
 
+    # Framework-dependent single-file build. Recipient needs .NET 8 Desktop
+    # Runtime installed (Windows prompts to install if missing).
     & $dotnet publish (Join-Path $src 'SurfaceChargingTray.csproj') `
-        -c Release -r $rid --self-contained `
+        -c Release -r $rid --self-contained false `
         -p:PublishSingleFile=true `
-        -p:EnableCompressionInSingleFile=true `
-        -p:IncludeNativeLibrariesForSelfExtract=true `
+        -p:PublishReadyToRun=false `
         -p:DebugType=none -p:DebugSymbols=false `
         -o $outDir
     if ($LASTEXITCODE -ne 0) { throw "$rid build failed (exit $LASTEXITCODE)." }

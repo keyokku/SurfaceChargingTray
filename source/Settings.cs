@@ -16,6 +16,29 @@ internal class SettingsModel
     /// <summary>Detected AUMID of the Surface app, cached so we don't re-discover on every run.</summary>
     public string? SurfaceAumid { get; set; }
 
+    // ---- Charging mode scheduler (v1.2.0+) ----------------------------
+    //
+    // Stored as a single "armed schedule" rather than a calendar of fires.
+    // When the user presses the schedule-toggle hotkey, the tray enters
+    // fake-sleep and computes the next-occurrence of ScheduleTime to fire
+    // a SetMode(ScheduleMode[, ScheduleDuration]). Clearing the schedule
+    // means setting ScheduleTime to null — no checkbox needed, the hotkey
+    // itself is the on/off.
+
+    /// <summary>"adaptive" / "80" / "100" — null means no schedule set.</summary>
+    public string? ScheduleMode { get; set; }
+
+    /// <summary>"1day" / "1week" — only meaningful when ScheduleMode == "100".</summary>
+    public string? ScheduleDuration { get; set; }
+
+    /// <summary>"HH:mm" 24h — null means no time set (cleared schedule).</summary>
+    public string? ScheduleTime { get; set; }
+
+    /// <summary>true = tear down fake-sleep after the scheduled SetMode fires
+    /// so the device falls back to its real Sleep / Screen-off timeouts.
+    /// false = stay in fake-sleep until user dismisses.</summary>
+    public bool ScheduleAutoExit { get; set; }
+
     /// <summary>
     /// Auto-discovered AutomationId / Name for the Battery & charging card and its
     /// three radio buttons. Captured on the first successful lookup so subsequent
@@ -43,6 +66,12 @@ internal class SettingsModel
         { "power-efficient", new HotkeyEntry { Enabled = false, Key = "^+5" } },
         { "power-balanced",  new HotkeyEntry { Enabled = false, Key = "^+6" } },
         { "power-perf",      new HotkeyEntry { Enabled = false, Key = "^+7" } },
+        // Scheduler: one hotkey toggles simulated sleep on/off. When entering,
+        // if ScheduleTime is set, the scheduled SetMode fires at that
+        // time. Disabled by default; user picks the combo in Settings.
+        // Default Ctrl+Shift+T — avoids colliding with the Ctrl+Shift+[1-7]
+        // charging-mode / Power-mode defaults.
+        { "schedule-toggle", new HotkeyEntry { Enabled = false, Key = "^+T" } },
     };
 
     public static SettingsModel Load()
@@ -104,6 +133,16 @@ internal class SettingsModel
                         case "charge100_radio_name": s.Charge100RadioName = val; break;
                     }
                 }
+                else if (section == "schedule")
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "mode":      s.ScheduleMode     = string.IsNullOrEmpty(val) ? null : val; break;
+                        case "duration":  s.ScheduleDuration = string.IsNullOrEmpty(val) ? null : val; break;
+                        case "time":      s.ScheduleTime     = string.IsNullOrEmpty(val) ? null : val; break;
+                        case "auto_exit": s.ScheduleAutoExit = (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
+                    }
+                }
             }
         }
         catch { }
@@ -137,6 +176,20 @@ internal class SettingsModel
                 lines.Add("");
                 lines.Add("[surface]");
                 lines.Add($"aumid={SurfaceAumid}");
+            }
+            // Emit schedule section only if any of its fields are non-default.
+            // Keeps settings.ini tidy on first launch / when no schedule armed.
+            if (!string.IsNullOrEmpty(ScheduleMode) ||
+                !string.IsNullOrEmpty(ScheduleDuration) ||
+                !string.IsNullOrEmpty(ScheduleTime) ||
+                ScheduleAutoExit)
+            {
+                lines.Add("");
+                lines.Add("[schedule]");
+                AppendIfSet(lines, "mode",     ScheduleMode);
+                AppendIfSet(lines, "duration", ScheduleDuration);
+                AppendIfSet(lines, "time",     ScheduleTime);
+                lines.Add($"auto_exit={(ScheduleAutoExit ? 1 : 0)}");
             }
             // Only emit cache section if we've discovered at least one value;
             // keeps a fresh settings.ini tidy on first launch before any lookup.
