@@ -86,15 +86,23 @@ To run: unzip anywhere, double-click `SurfaceChargingTray.exe`. The tray icon ap
 
 **Tested on:** Surface Pro 12 (Snapdragon) — native ARM64 build, overnight scheduler run.
 
+## How charging / Power modes work under the hood
+
+**Charging modes:** the Surface app is the only thing on Windows that exposes the three-mode charging UI, and Microsoft offers no documented API to change it from outside. So this tool briefly opens the Surface app **off-screen**, drives the right radio button on its *Battery & charging* page through Windows [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32), then closes the app. The whole cycle takes a few seconds.
+
+**Power modes:** uses `powrprof.dll` directly via P/Invoke. No process launches, no UI, no admin. The reads run on a 5-second timer so the tray check marks stay in sync if you change Power mode from Windows Settings or if Windows auto-switches on AC/DC transitions.
+
+The Surface app's package family name varies between Surface generations (`Microsoft.SurfaceHub_8wekyb3d8bbwe`, `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Auto-detected on first run via the WinRT `PackageManager`, so a fresh install on a different Surface model just works.
+
 ## Charging-mode scheduler — how it works
 
 ### The problem
 
-Surface charging modes can only be changed through the Surface app's UI, and the Surface app **only renders that UI while the device is actually awake and active**. If the device is asleep, locked, or has its screen off, Windows defers the UWP app's rendering and our tool can't drive it. So a naive scheduled task that fires at 5 AM while the device is asleep simply doesn't work — the Surface app is dormant.
+Building on the mechanism above: the Surface app **only renders its UI while the device is actually awake and active**. When the device is asleep, locked, or has its screen off, Windows defers UWP rendering — the UI tree is dormant and UI Automation finds nothing to click. So a naive scheduled task that fires at 5 AM with the device asleep simply does nothing.
 
 ### The workaround: "simulated sleep"
 
-When you toggle the schedule hotkey before bed, the tool enters a **simulated sleep** state instead of letting the device actually sleep:
+Toggling the schedule hotkey enters a **simulated sleep** state instead of letting the device actually sleep:
 
 - A fullscreen black overlay covers every monitor (looks the same as sleep)
 - Screen brightness drops to 0
@@ -124,9 +132,9 @@ Either way, your original brightness and Power-mode setting are restored when si
 ### Caveats
 
 - **Plugged in only.** Simulated sleep keeps the device active, which drains the battery. The tool refuses to enter on battery and shows a dialog warning if you press the hotkey while unplugged.
-- **Don't close the lid / press the power button / Win+L during simulated sleep.** Those are hardware signals that Windows treats as sleep / lock regardless of our flag, and they will take the device out of simulated-sleep state. The charging-mode flip will then fail (Surface app dormant again).
-- **The screen is still technically on** behind the overlay. Brightness is 0 but the panel draws power. This is the trade-off for keeping the Surface app drivable.
-- **No actual user activity is generated.** The mouse cursor doesn't move; Windows just thinks "an app is requesting display attention." If you have software that pings on user idle (e.g. status indicators that say "away after 5 min"), they'll behave as if the device is idle. That's fine.
+- **Don't close the lid / press the power button / Win+L during simulated sleep.** Those are hardware signals Windows treats as sleep / lock regardless of our flag — they take the device out of simulated-sleep state and the charging-mode flip will fail (Surface app dormant again).
+- **The screen is technically still on** behind the overlay. Brightness is 0 but the panel draws power. This is the trade-off for keeping the Surface app drivable.
+- **No user activity is generated.** The mouse cursor doesn't move; Windows just thinks "an app is requesting display attention." Software that pings on user idle (e.g. status indicators that say "away after 5 min") will behave as if the device is idle. That's fine.
 - **Crash recovery.** If the tray crashes during simulated sleep, the brightness and Power-mode originals are saved to a small recovery file and restored automatically on the next launch.
 
 ## Logs
@@ -137,14 +145,6 @@ Two log files live next to the .exe (so the package stays portable):
 - `crash.log` — captures unhandled .NET exceptions with full stack traces. Same rotating policy.
 
 Both are safe to delete at any time. If you click something and nothing happens AND no log entry appears, the app died before reaching the click handler — open Windows Event Viewer → Applications and look for an `Application Error` entry naming `SurfaceChargingTray.exe` for the OS-level crash code.
-
-## How charging / Power modes work under the hood
-
-**Charging modes:** the Surface app is the only thing on Windows that exposes the three-mode charging UI, and Microsoft offers no documented API to change it from outside. So this tool briefly opens the Surface app **off-screen**, drives the right radio button on its *Battery & charging* page through Windows [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32), then closes the app. The whole cycle takes a few seconds.
-
-**Power modes:** uses `powrprof.dll` directly via P/Invoke. No process launches, no UI, no admin. The reads run on a 5-second timer so the tray check marks stay in sync if you change Power mode from Windows Settings or if Windows auto-switches on AC/DC transitions.
-
-The Surface app's package family name varies between Surface generations (`Microsoft.SurfaceHub_8wekyb3d8bbwe`, `MicrosoftCorporationII.MicrosoftSurface_8wekyb3d8bbwe`, etc.). Auto-detected on first run via the WinRT `PackageManager`, so a fresh install on a different Surface model just works.
 
 ## Build from source
 
