@@ -32,6 +32,12 @@ release-staging/
 # Microsoft binaries — MUST NOT be redistributed in this public repo.
 v2-prototype/
 
+# v2 fast-path research code. Contains reverse-engineered Surface broker
+# protobuf schemas derived from Microsoft's Microsoft.Surface.SDMA assembly —
+# kept locally as historical engineering record but NOT redistributed in
+# the public repo to avoid grey-area IP exposure.
+v2-archive/
+
 # Local-only design notes / sketches not meant for the public repo.
 private-notes/
 
