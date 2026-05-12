@@ -73,7 +73,7 @@ Latest release on the [Releases](../../releases) tab. Two packages:
 
 Find your CPU at **Settings → System → About → System type**. Unzip, double-click `SurfaceChargingTray.exe`. No install, no admin.
 
-Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) (Windows offers a direct download link on first launch if missing).
+Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) , a Windows standard framework (i.e. PowerToys, Terminal, Files).Windows offers a direct install link on first launch if missing.
 
 ## Compatibility
 
