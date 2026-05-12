@@ -17,7 +17,9 @@ built-in scheduler so you can have charging mode flip overnight on its own.
 > **Note** — the charging-mode side drives the modern Surface app's three-mode
 > *Battery & charging* UI. Most Surface devices from Pro 8 / Laptop 5 onward
 > have it. If your Surface app's *Battery & charging* page does not show those
-> three radio buttons, this tool cannot drive them.
+> three radio buttons, this tool cannot drive them. This app is a work in
+> progress and has been only tested on few devices so issues may exist. Please
+> check the Flagging issues in Github section.
 >
 > **Known Surface-app issue (not us):** on some installs the Surface app
 > intermittently fails to render the *Battery & charging* card even when you
