@@ -23,10 +23,10 @@ built-in scheduler so you can have charging mode flip overnight on its own.
 > instead, your device's Surface app uses an older UI variant that this tool
 > can't drive yet (planned for v1.3.0).
 >
-> **Confirmed working:** Surface Pro 8 onward · Surface Laptop 5 onward ·
+> **Likely working:** Surface Pro 8 onward · Surface Laptop 5 onward ·
 > Surface Laptop Studio 2 onward.
 >
-> **Confirmed not yet supported:** Surface Laptop Studio 1 · Surface Pro 7
+> **Not yet supported:** Surface Laptop Studio 1 · Surface Pro 7
 > and earlier (single-toggle UI).
 
 > **Work in progress** — only tested on a few devices so far. Issues may exist
