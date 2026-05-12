@@ -148,6 +148,22 @@ Two log files live next to the .exe (so the package stays portable):
 
 Both are safe to delete at any time. If you click something and nothing happens AND no log entry appears, the app died before reaching the click handler — open Windows Event Viewer → Applications and look for an `Application Error` entry naming `SurfaceChargingTray.exe` for the OS-level crash code.
 
+## Flagging issues in Github
+
+Include the following when submitting issues after encountering problems:
+
+- Windows version
+- Surface device model
+- Surface app version
+- Screenshot of your Surface app manually opened and fully rendered (charging panel open if possible)
+- Screenshot of the error dialog
+- Error or crash log files in your program folder as mentioned above
+- Steps to reproduce error / what were you doing when you encounter the error
+- Any additional details or even video capture if possible
+
+Note: This is a work in progress and only tested on one or few devices, so there may likely be issues and limited testing environment to reproduce issues. Issue reports will be helpful and I will attempt to patch issues.
+
+
 ## Build from source
 
 Needs the [.NET 8 SDK](https://dotnet.microsoft.com/download):
