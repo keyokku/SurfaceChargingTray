@@ -5,6 +5,49 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.2.2 — 2026-05-12
+
+Diagnostic tool + better error-state guidance for users hitting "card not
+found" or "no radios appear selected" on Surface app variants we don't
+yet support. Fully backward-compatible with v1.2.x settings.
+
+### New: diagnostic tool
+
+- **`SurfaceChargingTrayDiagnostic.zip`** is now attached as a separate
+  download alongside the main app's release zips. Contains a small
+  standalone tool that launches the Surface app, captures its complete
+  UIA tree + a window screenshot + system info, and writes the output
+  next to the .exe. Users post the output on the diagnostic-results
+  thread (issue #2) so I can support their Surface model in v1.3.0.
+- The tool is versionless (intentionally — it's a generic capture
+  utility); the same zip is attached to every future release.
+- Bundles both arm64 and x64 exes in one zip; users pick the right
+  one for their CPU.
+
+### Main app
+
+- **Custom error dialog** replaces the plain MessageBox when "Show last
+  error" surfaces a detection-failure (e.g. "card not found", "radios
+  appear selected"). New dialog explains what happened in one paragraph
+  and offers two clickable buttons: *Download diagnostic tool* (deep-
+  links to the latest Releases page) and *Open GitHub thread* (deep-
+  links to the diagnostic-results thread). Other (non-detection) errors
+  still get the simple display.
+- **Added German locale variant** `"Akku und Laden"` to the
+  Battery & charging name list — observed on Surface Laptop Studio 1's
+  Surface app build.
+- **Tree snapshot diagnostic deepened**: when the detection-failure
+  errors fire, the UIA tree dump in `surface-error.log` now goes 5
+  levels deep (was 3) and captures up to 120 elements (was 60).
+  Surface app cards live at depth ~4-5 so the previous limit was
+  cutting off where the diagnostic info became useful.
+
+### Compatibility
+
+Same OS / device requirements as v1.2.1. .NET 8 Desktop Runtime required.
+
+---
+
 ## v1.2.1 — 2026-05-12
 
 Detection-and-discovery hardening patch for users on Surface devices /

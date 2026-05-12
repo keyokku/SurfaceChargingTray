@@ -50,6 +50,7 @@ internal static class UiaCache
         // Common localizations (best-effort; expand as reports arrive):
         "Akku & Aufladen",        // de-DE
         "Akku und Aufladen",      // de-DE alt
+        "Akku und Laden",         // de-DE (observed on Surface Laptop Studio 1)
         "Batterie et charge",     // fr-FR
         "Batterie et chargement", // fr-FR alt
         "Batería y carga",        // es-ES
@@ -139,8 +140,13 @@ internal static class UiaCache
         {
             var sb = new System.Text.StringBuilder();
             sb.Append("[INFO] UIA tree snapshot (").Append(reason).Append("):\n");
-            int count = DumpElement(root, sb, depth: 0, maxDepth: 3, count: 0, maxCount: 60);
-            if (count >= 60) sb.Append("  (truncated at 60 elements)\n");
+            // depth=5 + cap=120: deep enough to see inside the Surface app's
+            // CapCardListView (the cards live at depth ~4-5), wide enough to
+            // include sibling cards alongside the Battery card without
+            // truncating. Bumped from depth=3/cap=60 in v1.2.1 after a user
+            // report cut off the card contents.
+            int count = DumpElement(root, sb, depth: 0, maxDepth: 5, count: 0, maxCount: 120);
+            if (count >= 120) sb.Append("  (truncated at 120 elements)\n");
             Logger.Error(sb.ToString().TrimEnd());
         }
         catch (System.Exception ex)

@@ -55,7 +55,7 @@ All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **[v1.2.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.1)** *(latest)* | 2026-05-12 | Charging-mode scheduler. Press a hotkey before bed; the device stays active behind a black overlay until your set time, flips charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler) below. **Better multilingual + structural detection for the Surface app, more diagnostic logging when detection fails. No AHK package — `.exe` builds only.** |
+| **[v1.2.2](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.2)** *(latest)* | 2026-05-12 | Charging-mode scheduler. Press a hotkey before bed; the device stays active behind a black overlay until your set time, flips charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler) below. **Adds a separate diagnostic tool download for users whose Surface model isn't detected, plus better error dialog that links to it. No AHK package — `.exe` builds only.** |
 | **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
 | **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** | 2026-05-10 | Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. |
 | **[v1.0.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.0.0)** | 2026-05-09 | Initial release. Charging-mode tray icon, light/dark theme, configurable hotkeys for the four modes + cycle, auto-start at Windows login, three packages (arm64 / x64 / AHK). |
@@ -68,8 +68,8 @@ Latest release on the [Releases](../../releases) tab. Two packages:
 
 | Package | For |
 |---|---|
-| `SurfaceChargingTray-v1.2.1-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
-| `SurfaceChargingTray-v1.2.1-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
+| `SurfaceChargingTray-v1.2.2-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
+| `SurfaceChargingTray-v1.2.2-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
 
 Find your CPU at **Settings → System → About → System type**. Unzip, double-click `SurfaceChargingTray.exe`. No install, no admin.
 
@@ -121,28 +121,38 @@ Surface charging modes can only be changed through the Surface app's UI, and Win
 - **No user activity is generated.** Software that pings on user idle (e.g. "away after 5 min") will behave as if the device is idle. That's fine.
 - **Crash recovery** — if the tray crashes during simulated sleep, the brightness and Power-mode originals are restored automatically on the next launch.
 
-## Logs
+## Troubleshooting and flagging issues in Github
 
-`surface-error.log` and `crash.log` live next to the .exe — auto-rotating at 500 lines so they stay small. **Please attach them when filing a GitHub issue** (see *Flagging issues in Github* below) — they contain the diagnostic info needed to debug your report.
+If something goes wrong, take it in this order:
 
-## Flagging issues in Github
+### 1. Check the log files
 
-Diagnostic tool coming to help improve compatibility support!
+`surface-error.log` and `crash.log` live next to the .exe — auto-rotating at 500 lines so they stay small. **Please attach them when filing a report** — they contain the diagnostic info needed to debug.
 
-Include the following when submitting issues after encountering problems:
+### 2. Run the diagnostic tool
+
+If you see "card not found" or "no charging-mode radios appear selected", your Surface app's UI is structured differently than what this tool expects. The **diagnostic tool** captures your Surface app's full UI tree + a screenshot + system info so the developer can support your device in a future update.
+
+- Download **[`SurfaceChargingTrayDiagnostic.zip`](https://github.com/keyokku/SurfaceChargingTray/releases/latest)** from the latest Release. It's attached as a separate asset alongside the main app's zips.
+- Unzip, then run the `.exe` matching your CPU (x64 or arm64).
+- Click **Run Test** in the dialog. The tool launches the Surface app if needed, scans the UI, and writes a `.txt` + `.png` next to the diagnostic exe.
+- Post both files as a comment on the **[diagnostic-results thread](https://github.com/keyokku/SurfaceChargingTray/issues/2)**. One sentence about what you were doing helps.
+
+### 3. Or, file a separate issue
+
+For other problems (crashes, scheduler issues, UI bugs in the tray), [open a new GitHub issue](https://github.com/keyokku/SurfaceChargingTray/issues/new). Please include:
 
 - Windows version
 - Surface device model
 - Surface app version
-- Charging tray app version (latest is v1.2.1)
-- Screenshot of your Surface app manually opened and fully rendered (charging panel open if possible)
-- Screenshot of the error dialog
-- Settings.ini, surface-error.log, crash.log, basically all these log files in your program folder (whole thing)
-- Steps to reproduce error / what were you doing when you encounter the error
-- For scheduler issues: Windows sleep/screen-off settings and what you did during simulated sleep
-- Any additional details or even video capture if possible
+- Charging tray app version (latest is v1.2.2)
+- Screenshot of the error dialog, plus a screenshot of your Surface app manually opened (charging panel open if possible)
+- `settings.ini`, `surface-error.log`, `crash.log` from the program folder
+- Steps to reproduce / what you were doing when you hit the error
+- For scheduler issues: Windows sleep/screen-off settings + what you did during simulated sleep
+- Any extra details or video capture if possible
 
-Note: This is a work in progress and only tested on one or few devices, so there may likely be issues and limited testing environment to reproduce issues. Issue reports will be helpful and I will attempt to patch issues.
+This project is a work in progress and tested on only a couple of devices, so reports are appreciated and I'll patch as I can.
 
 ## Build from source
 
@@ -154,7 +164,7 @@ cd SurfaceChargingTray
 powershell -ExecutionPolicy Bypass -File build.ps1
 ```
 
-Output: `dist/v1.2.1/<arch>/SurfaceChargingTray.exe` (~25 MB framework-dependent).
+Output: `dist/v1.2.2/<arch>/SurfaceChargingTray.exe` (~25 MB framework-dependent).
 
 ## Contributing
 
