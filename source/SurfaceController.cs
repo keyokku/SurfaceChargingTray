@@ -102,22 +102,15 @@ internal static class SurfaceController
             if (win == null) throw new Exception("Could not bind UI Automation to the Surface window.");
 
             // Layered lookup: cached AutomationId → cached Name → known-Names list
-            // → structural search for any Group with 3+ radios. Cache is updated on
-            // every successful match so subsequent runs skip straight to the fast path.
+            // → structural search. Cache is updated on every successful match so
+            // subsequent runs skip straight to the fast path.
             var settings = Settings ?? SettingsModel.Load();
-            var bcGroup = UiaCache.FindBatteryCard(win, settings, 15000);
+            var bcGroup = LookupBatteryCard(win, settings);
             if (bcGroup == null)
             {
-                // Self-healing: comprehensive discovery scan as last resort.
-                // Expands every collapsible element in the window, walks the
-                // tree, captures the card + 3 radios into the cache. Slow
-                // (~1-2s) but only fires when normal lookup fails — typically
-                // first launch after a Surface app update changed the labels.
-                if (UiaCache.DiscoverAndCacheAll(win, settings))
-                    bcGroup = UiaCache.FindBatteryCard(win, settings, 5000);
-            }
-            if (bcGroup == null)
+                UiaCache.LogTreeSnapshot(win, "card not found in SetMode");
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
+            }
 
             ExpandIfCollapsed(bcGroup);
 
@@ -126,7 +119,22 @@ internal static class SurfaceController
 
             var rb = UiaCache.FindRadio(bcGroup, mode, settings, 5000);
             if (rb == null)
+            {
+                // Cache-poisoning retry: the cached card may point at a wrong
+                // Group (auto-discovery picked a similar structure on first
+                // launch). Clear, re-discover from scratch, retry once.
+                bcGroup = LookupBatteryCardForcingRediscovery(win, settings);
+                if (bcGroup != null)
+                {
+                    ExpandIfCollapsed(bcGroup);
+                    rb = UiaCache.FindRadio(bcGroup, mode, settings, 5000);
+                }
+            }
+            if (rb == null)
+            {
+                UiaCache.LogTreeSnapshot(win, $"radio '{mode}' not found in SetMode");
                 throw new Exception($"Couldn't find the radio button for mode '{mode}'. Your Surface app may be an older build that doesn't expose this mode.");
+            }
 
             var sel = (SelectionItemPattern)rb.GetCurrentPattern(SelectionItemPattern.Pattern);
             if (!sel.Current.IsSelected)
@@ -197,23 +205,34 @@ internal static class SurfaceController
                 ?? throw new Exception("Could not bind UI Automation to the Surface window.");
 
             var settings = Settings ?? SettingsModel.Load();
-            var bcGroup = UiaCache.FindBatteryCard(win, settings, 15000);
+            var bcGroup = LookupBatteryCard(win, settings);
             if (bcGroup == null)
             {
-                if (UiaCache.DiscoverAndCacheAll(win, settings))
-                    bcGroup = UiaCache.FindBatteryCard(win, settings, 5000);
-            }
-            if (bcGroup == null)
+                UiaCache.LogTreeSnapshot(win, "card not found in RefreshState");
                 throw new Exception("'Battery & charging' card not found. Your Surface model or app version may not support the three charging modes.");
+            }
 
             ExpandIfCollapsed(bcGroup);
 
             // FindSelectedModeKey internally walks the 3 radios via the layered lookup
             // (so its cache gets populated as a side effect) and returns the modeKey
-            // of whichever radio reports IsSelected.
+            // of whichever radio reports active via SelectionItem / Toggle / Legacy.
             var selectedKey = UiaCache.FindSelectedModeKey(bcGroup, settings);
             if (selectedKey == null)
+            {
+                // Cache-poisoning retry — same logic as SetMode.
+                bcGroup = LookupBatteryCardForcingRediscovery(win, settings);
+                if (bcGroup != null)
+                {
+                    ExpandIfCollapsed(bcGroup);
+                    selectedKey = UiaCache.FindSelectedModeKey(bcGroup, settings);
+                }
+            }
+            if (selectedKey == null)
+            {
+                UiaCache.LogTreeSnapshot(win, "no radio reports selected in RefreshState");
                 throw new Exception("None of the three charging-mode radios appear selected. Your Surface app build may differ from the one this tool was written for.");
+            }
 
             // Duration combo only exists when "Charge to 100%" is selected.
             // The combo's AutomationId ("DurationSelectionComboBox") is set by
@@ -278,6 +297,39 @@ internal static class SurfaceController
     }
 
     // ---- helpers --------------------------------------------------------
+
+    /// <summary>
+    /// Normal battery-card lookup: layered cache → multi-language → structural.
+    /// If layers 1-4 miss, runs the comprehensive discovery scan as a one-shot
+    /// fallback (expands every collapsible element, re-walks the tree). Returns
+    /// null only if every strategy failed.
+    /// </summary>
+    private static AutomationElement? LookupBatteryCard(AutomationElement win, SettingsModel settings)
+    {
+        var bcGroup = UiaCache.FindBatteryCard(win, settings, 15000);
+        if (bcGroup == null)
+        {
+            if (UiaCache.DiscoverAndCacheAll(win, settings))
+                bcGroup = UiaCache.FindBatteryCard(win, settings, 5000);
+        }
+        return bcGroup;
+    }
+
+    /// <summary>
+    /// Cache-poisoning recovery: cached AutomationId/Name lookup may
+    /// return a wrong Group that an earlier auto-discovery pass picked
+    /// (e.g. on a Surface app build where the structure differs from
+    /// what we expected). When a downstream operation under that cached
+    /// card fails — no radio found, or no radio reports IsSelected — we
+    /// clear the cache and force a fresh discovery + structural search,
+    /// which won't return the same wrong Group.
+    /// </summary>
+    private static AutomationElement? LookupBatteryCardForcingRediscovery(AutomationElement win, SettingsModel settings)
+    {
+        UiaCache.ClearAllCache(settings);
+        if (!UiaCache.DiscoverAndCacheAll(win, settings)) return null;
+        return UiaCache.FindBatteryCard(win, settings, 5000);
+    }
 
     private static (Process proc, bool launchedByUs) AcquireSurfaceWindow()
     {
@@ -411,29 +463,87 @@ internal static class SurfaceController
     }
 
     /// <summary>
+    /// Localized window titles for the Surface app — best-effort. Windows
+    /// pulls a UWP package's MainWindowTitle from the localized DisplayName
+    /// resource, so a German install shows "Oberfläche" not "Surface". Best
+    /// to recognize them all. The English match comes first since it's still
+    /// the most common locale.
+    /// </summary>
+    private static readonly string[] SurfaceWindowTitles =
+    {
+        "Surface",         // en, fr, it, es (same word), nl, da, sv, no, fi, pt, pl, ro, hr
+        "Oberfläche",      // de-DE
+        "Pinta",           // some Nordic locales
+        "Yüzey",           // tr-TR
+        "Поверхность",     // ru-RU
+        "Powierzchnia",    // pl-PL alt
+        "Powerchnia",      // pl-PL alt
+        "Plocha",          // cs-CZ, sk-SK
+        "Felület",         // hu-HU
+        "Pavirsius",       // lt-LT (no diacritics)
+        "Paviršius",       // lt-LT
+        "Površina",        // sl-SI, hr-HR
+        "Επιφάνεια",       // el-GR
+        "السطح",            // ar
+        "פני שטח",          // he-IL
+        "พื้นผิว",            // th-TH
+        "พื้นผิวSurface",     // th-TH alt brand-prefix
+        "Surface",          // ja-JP (often kept in English)
+        "サーフェス",         // ja-JP katakana
+        "Surface",          // zh-CN (often kept)
+        "表面",              // zh-CN literal
+        "表面",              // zh-TW literal
+        "Surface",          // ko-KR (often kept)
+        "서피스",            // ko-KR
+    };
+
+    private static bool IsSurfaceWindowTitle(string title)
+    {
+        if (string.IsNullOrEmpty(title)) return false;
+        foreach (var t in SurfaceWindowTitles)
+            if (string.Equals(title, t, StringComparison.Ordinal)) return true;
+        return false;
+    }
+
+    /// <summary>
     /// Finds the running Surface app process (or null). Disposes every
     /// non-matching <see cref="Process"/> that <c>Process.GetProcesses</c>
     /// returned, so we don't leak handles for the dozens of unrelated
     /// processes the enumeration also includes.
+    ///
+    /// Matches on a list of locale-specific window titles AND a name-based
+    /// fallback for systems whose Surface app uses a localized title we
+    /// haven't catalogued yet.
     /// </summary>
     private static Process? FindSurface()
     {
         Process? match = null;
-        foreach (var p in Process.GetProcesses())
+        // Two-pass approach: first pass strictly matches our localized title
+        // list; second pass (only if needed) accepts any ApplicationFrameHost
+        // process whose window title isn't empty and whose owning UWP package
+        // name contains the Surface AUMID's prefix. The strict pass is fast
+        // and zero-false-positive; the fallback pass is for locales we
+        // haven't catalogued.
+        var procs = Process.GetProcesses();
+        // Strict pass
+        for (int i = 0; i < procs.Length; i++)
         {
-            if (match == null)
+            var p = procs[i];
+            if (match != null) continue;
+            try
             {
-                try
+                if (IsSurfaceWindowTitle(p.MainWindowTitle) && p.MainWindowHandle != IntPtr.Zero)
                 {
-                    if (p.MainWindowTitle == "Surface" && p.MainWindowHandle != IntPtr.Zero)
-                    {
-                        match = p;
-                        continue;  // keep alive, skip Dispose
-                    }
+                    match = p;
+                    procs[i] = null!; // skip disposal below
                 }
-                catch { }
             }
-            p.Dispose();
+            catch { }
+        }
+        // Dispose everyone we didn't keep.
+        for (int i = 0; i < procs.Length; i++)
+        {
+            try { procs[i]?.Dispose(); } catch { }
         }
         return match;
     }

@@ -5,6 +5,67 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.2.1 — 2026-05-12
+
+Detection-and-discovery hardening patch for users on Surface devices /
+locales / Surface app builds that the v1.2.0 baseline didn't recognize.
+Fully backward-compatible with v1.2.0 settings.
+
+### Detection improvements
+
+- **More lenient structural search for the Battery & charging card.**
+  Previously the structural fallback required a Group with *exactly* 3+
+  RadioButton descendants. New strategies in order: 3+ radios → 2+ radios
+  → any element whose AutomationId contains "Battery" / "Charging" /
+  "ChargeMode" → walk-up from any RadioButton whose Name matches a known
+  charging mode. Catches Surface app builds where the wrapper element is
+  a Pane instead of a Group, or where the radio count differs.
+- **Multi-pattern selection detection.** When reading which mode is
+  currently active, the tool now tries `SelectionItemPattern.IsSelected`
+  (canonical) and then `TogglePattern.ToggleState == On`. Surface app
+  builds that implement the mode controls as toggle-buttons (rather
+  than radio-buttons) now work where previously the "None of the three
+  radios appear selected" error fired.
+- **Cache-poisoning recovery.** If a previously-cached card (from an
+  earlier first-launch discovery) leads to "radio not found" or "no
+  selection" downstream, the tool now clears the cache, re-runs
+  discovery from scratch, and retries once. Recovers from a wrong-card
+  cache without needing to delete `settings.ini` manually.
+- **More multi-language Names** for the Battery & charging card:
+  added Microsoft-newer terminology ("Smart charging", "Charging mode",
+  "Battery Smart Charging") and additional locale entries.
+- **Multi-language window title** when finding the Surface app process
+  on launch. Was previously hardcoded to the English "Surface"; now
+  accepts the localized window title for most major locales (de, ru,
+  tr, ja, zh, ko, ar, etc.).
+- **Multi-language Surface app DisplayName** in the package discovery
+  scan. Was previously hardcoded English-only; now accepts any
+  Surface-package-named entry regardless of localized display name.
+
+### Diagnostics
+
+- **UIA tree snapshot** is written to `surface-error.log` when the
+  "card not found" or "no radio selected" errors fire. Captures the
+  top 3 levels of the Surface app's UI tree (up to 60 elements) with
+  each element's ControlType, Name, and AutomationId. Makes future
+  bug reports actionable without needing the user to re-run anything.
+
+### WMI brightness hardening
+
+- Brightness values requested by simulated sleep are now **snapped to
+  the closest level the display driver advertises** via
+  `WmiMonitorBrightness.Levels`. Previously called `WmiSetBrightness(0)`
+  unconditionally, which silently no-ops or fails on displays whose
+  driver doesn't include `0` in its supported levels. Visible behavior
+  unchanged on Surface built-in displays (which support 0); fixes a
+  latent issue on certain external monitors / non-Surface laptops.
+
+### Compatibility
+
+Same OS / device requirements as v1.2.0. .NET 8 Desktop Runtime required.
+
+---
+
 ## v1.2.0 — 2026-05-11
 
 Charging-mode scheduler. Set a daily time and a target charging mode and the

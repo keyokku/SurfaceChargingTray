@@ -43,13 +43,21 @@ internal static class UiaCache
         "Battery and charging",
         "Battery",
         "Charging",
+        // Newer Microsoft terminology that may appear in v76+ Surface app builds.
+        "Charging mode",
+        "Smart charging",
+        "Battery Smart Charging",
         // Common localizations (best-effort; expand as reports arrive):
         "Akku & Aufladen",        // de-DE
+        "Akku und Aufladen",      // de-DE alt
         "Batterie et charge",     // fr-FR
+        "Batterie et chargement", // fr-FR alt
         "Batería y carga",        // es-ES
+        "Batería y carga",        // es-MX (same)
         "Batteria e ricarica",    // it-IT
         "Bateria e carregamento", // pt-BR / pt-PT
-        "Battery en opladen",     // nl-NL
+        "Battery en opladen",     // nl-NL (literal)
+        "Batterij en opladen",    // nl-NL native
         "Akumulator i ładowanie", // pl-PL
         "Batteri og opladning",   // da-DK
         "Batteri och laddning",   // sv-SE
@@ -116,6 +124,94 @@ internal static class UiaCache
         "充電至 100%",
         "100%로 충전",
     };
+
+    /// <summary>
+    /// Dump a brief snapshot of the Surface app's UIA tree (top 3 levels,
+    /// up to 60 elements) to the error log. Called from SurfaceController's
+    /// "card not found" / "no radio selected" error paths so future bug
+    /// reports include what the tree actually looked like at failure time,
+    /// instead of just "didn't find it." Truncated by design — full tree
+    /// dumps can be hundreds of nodes.
+    /// </summary>
+    public static void LogTreeSnapshot(AutomationElement root, string reason)
+    {
+        try
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append("[INFO] UIA tree snapshot (").Append(reason).Append("):\n");
+            int count = DumpElement(root, sb, depth: 0, maxDepth: 3, count: 0, maxCount: 60);
+            if (count >= 60) sb.Append("  (truncated at 60 elements)\n");
+            Logger.Error(sb.ToString().TrimEnd());
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[ERR ] LogTreeSnapshot failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static int DumpElement(
+        AutomationElement e, System.Text.StringBuilder sb,
+        int depth, int maxDepth, int count, int maxCount)
+    {
+        if (count >= maxCount) return count;
+        string name = "", id = "", ct = "";
+        try { name = (e.GetCurrentPropertyValue(AutomationElement.NameProperty)        as string ?? "").Trim(); } catch { }
+        try { id   = (e.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string ?? "").Trim(); } catch { }
+        try
+        {
+            if (e.GetCurrentPropertyValue(AutomationElement.ControlTypeProperty) is ControlType c)
+                ct = c.ProgrammaticName?.Replace("ControlType.", "") ?? "";
+        }
+        catch { }
+        if (name.Length > 60) name = name[..60] + "…";
+        if (id.Length   > 40) id   = id[..40]   + "…";
+        sb.Append(new string(' ', depth * 2))
+          .Append("- [").Append(ct).Append("] name='").Append(name)
+          .Append("' id='").Append(id).Append("'\n");
+        count++;
+
+        if (depth >= maxDepth) return count;
+        try
+        {
+            var children = e.FindAll(TreeScope.Children, Condition.TrueCondition);
+            foreach (AutomationElement c in children)
+            {
+                count = DumpElement(c, sb, depth + 1, maxDepth, count, maxCount);
+                if (count >= maxCount) break;
+            }
+        }
+        catch { }
+        return count;
+    }
+
+    /// <summary>
+    /// Wipe the cached Battery card + radio IDs/names. Called from
+    /// SurfaceController when a previously-cached card fails downstream
+    /// validation (the cache poisoning scenario: auto-discovery may have
+    /// cached a wrong Group, and Layer 1/2 keep retrieving it forever).
+    /// Next FindBatteryCard then re-runs Layers 3-4 from scratch.
+    /// </summary>
+    public static void ClearAllCache(SettingsModel s)
+    {
+        bool changed = false;
+        if (s.BatteryCardId != null || s.BatteryCardName != null)
+        {
+            s.BatteryCardId = null; s.BatteryCardName = null; changed = true;
+        }
+        if (s.AdaptiveRadioId != null || s.AdaptiveRadioName != null)
+        {
+            s.AdaptiveRadioId = null; s.AdaptiveRadioName = null; changed = true;
+        }
+        if (s.Limit80RadioId != null || s.Limit80RadioName != null)
+        {
+            s.Limit80RadioId = null; s.Limit80RadioName = null; changed = true;
+        }
+        if (s.Charge100RadioId != null || s.Charge100RadioName != null)
+        {
+            s.Charge100RadioId = null; s.Charge100RadioName = null; changed = true;
+        }
+        if (changed) s.Save();
+    }
 
     // ---- Public API ----------------------------------------------------
 
@@ -187,9 +283,16 @@ internal static class UiaCache
 
     /// <summary>
     /// Walk the radios under a known card and return the modeKey of the
-    /// currently selected one. Used by RefreshState to read the live mode.
-    /// Tries each modeKey via the layered lookup; returns null if no radio
-    /// reports IsSelected. Caches as a side-effect of each FindRadio call.
+    /// currently selected one. Tries two "is-this-one-active?" signals
+    /// because Surface app builds vary in which UIA pattern the mode
+    /// controls expose:
+    ///
+    ///   1. SelectionItemPattern.IsSelected (canonical for RadioButton).
+    ///   2. TogglePattern.ToggleState == On (some Surface app versions
+    ///      implement the mode controls as toggle-buttons rather than
+    ///      radios; ToggleState surfaces the "on" one).
+    ///
+    /// Returns null only if no radio reports active on either pattern.
     /// </summary>
     public static string? FindSelectedModeKey(AutomationElement card, SettingsModel settings)
     {
@@ -197,10 +300,26 @@ internal static class UiaCache
         {
             var rb = FindRadio(card, key, settings, 2000);
             if (rb == null) continue;
+
+            // Strategy 1: SelectionItemPattern
             try
             {
-                var sp = (SelectionItemPattern)rb.GetCurrentPattern(SelectionItemPattern.Pattern);
-                if (sp.Current.IsSelected) return key;
+                if (rb.TryGetCurrentPattern(SelectionItemPattern.Pattern, out object spObj))
+                {
+                    var sp = (SelectionItemPattern)spObj;
+                    if (sp.Current.IsSelected) return key;
+                }
+            }
+            catch { }
+
+            // Strategy 2: TogglePattern
+            try
+            {
+                if (rb.TryGetCurrentPattern(TogglePattern.Pattern, out object tpObj))
+                {
+                    var tp = (TogglePattern)tpObj;
+                    if (tp.Current.ToggleState == ToggleState.On) return key;
+                }
             }
             catch { }
         }
@@ -441,12 +560,26 @@ internal static class UiaCache
     }
 
     /// <summary>
-    /// Last-resort: any Group with 3+ RadioButton descendants is the card.
-    /// Microsoft's UI has only one such structure; this works regardless of
-    /// language or rename.
+    /// Last-resort structural search. Tries progressively more lenient
+    /// strategies so we can find the card even when the Surface app on a
+    /// given device differs from the Pro 12 baseline we developed against:
+    ///
+    ///   Strategy A: any Group with exactly 3+ RadioButton descendants.
+    ///               (Original behavior. Works on Pro 12 / Laptop 5 era.)
+    ///   Strategy B: any Group with 2+ RadioButton descendants.
+    ///               (Catches devices that show only Adaptive + 80%, or 80% +
+    ///               100%, etc.)
+    ///   Strategy C: any element whose AutomationId contains "Battery" or
+    ///               "Charging" (Microsoft semi-frequently uses such IDs for
+    ///               container panels; locale-independent).
+    ///   Strategy D: walk UP from any RadioButton in the tree whose Name is
+    ///               in one of our mode-name lists, looking for an ancestor
+    ///               with siblings forming the radio group. Survives a Surface
+    ///               app rebuild that abandons the Group wrapper entirely.
     /// </summary>
     private static AutomationElement? FindCardStructurally(AutomationElement window)
     {
+        // Strategy A: original — exactly 3+ radios
         try
         {
             var groups = window.FindAll(TreeScope.Subtree,
@@ -457,6 +590,90 @@ internal static class UiaCache
             }
         }
         catch { }
+
+        // Strategy B: relaxed — 2+ radios in a Group
+        try
+        {
+            var groups = window.FindAll(TreeScope.Subtree,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Group));
+            foreach (AutomationElement g in groups)
+            {
+                try
+                {
+                    var radios = g.FindAll(TreeScope.Subtree,
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton));
+                    if (radios.Count >= 2) return g;
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        // Strategy C: AutomationId substring match (locale-independent)
+        try
+        {
+            var all = window.FindAll(TreeScope.Subtree, Condition.TrueCondition);
+            foreach (AutomationElement e in all)
+            {
+                try
+                {
+                    var id = e.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string ?? "";
+                    if (id.Length == 0) continue;
+                    if (id.Contains("Battery", System.StringComparison.OrdinalIgnoreCase) ||
+                        id.Contains("Charging", System.StringComparison.OrdinalIgnoreCase) ||
+                        id.Contains("ChargeMode", System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Confirm it contains radios (i.e. it's the card, not
+                        // a label/icon with an unrelated battery name).
+                        var radios = e.FindAll(TreeScope.Subtree,
+                            new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton));
+                        if (radios.Count >= 2) return e;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        // Strategy D: walk UP from any RadioButton whose Name matches a
+        // charging mode in our known lists.
+        try
+        {
+            var radios = window.FindAll(TreeScope.Subtree,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton));
+            foreach (AutomationElement rb in radios)
+            {
+                string rname = "";
+                try { rname = rb.Current.Name ?? ""; } catch { }
+                bool isChargingMode =
+                    System.Array.IndexOf(AdaptiveNames,  rname) >= 0 ||
+                    System.Array.IndexOf(Limit80Names,   rname) >= 0 ||
+                    System.Array.IndexOf(Charge100Names, rname) >= 0;
+                if (!isChargingMode) continue;
+
+                // Walk up the tree looking for a Group/Pane ancestor with
+                // 2+ radios in its subtree.
+                var walker = TreeWalker.RawViewWalker;
+                var parent = walker.GetParent(rb);
+                for (int hops = 0; hops < 8 && parent != null; hops++)
+                {
+                    try
+                    {
+                        var ct = (ControlType?)parent.GetCurrentPropertyValue(AutomationElement.ControlTypeProperty);
+                        if (ct == ControlType.Group || ct == ControlType.Pane)
+                        {
+                            var subRadios = parent.FindAll(TreeScope.Subtree,
+                                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.RadioButton));
+                            if (subRadios.Count >= 2) return parent;
+                        }
+                    }
+                    catch { }
+                    parent = walker.GetParent(parent);
+                }
+            }
+        }
+        catch { }
+
         return null;
     }
 

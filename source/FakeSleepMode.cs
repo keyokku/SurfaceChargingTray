@@ -442,18 +442,57 @@ internal static class FakeSleepMode
     }
 
     /// <summary>Set brightness. timeout=1 means "apply immediately and
-    /// return when done". WMI may quantize to the nearest supported level.</summary>
+    /// return when done". WMI may quantize to the nearest supported level.
+    ///
+    /// The display driver advertises a discrete set of supported brightness
+    /// values via WmiMonitorBrightness.Levels — not guaranteed to include
+    /// 0 or to be a contiguous 0-100 range. We pass the caller's requested
+    /// percent through SnapToValidLevel() so a request like "0" maps to the
+    /// device's true minimum supported level when 0 itself isn't in the set.
+    /// </summary>
     private static void SetBrightness(byte percent)
     {
+        byte target = SnapToValidLevel(percent);
         using var s = new ManagementObjectSearcher("root\\WMI", "SELECT * FROM WmiMonitorBrightnessMethods");
         using var col = s.Get();
         foreach (ManagementObject mo in col)
         {
             using (mo)
             {
-                mo.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, percent });
+                mo.InvokeMethod("WmiSetBrightness", new object[] { (uint)1, target });
             }
         }
+    }
+
+    /// <summary>Find the closest brightness level in the driver's
+    /// advertised Levels array. Returns the input unchanged if the Levels
+    /// query fails (preserving prior behavior on devices that don't expose
+    /// it cleanly).</summary>
+    private static byte SnapToValidLevel(byte requested)
+    {
+        try
+        {
+            using var s = new ManagementObjectSearcher("root\\WMI", "SELECT Levels FROM WmiMonitorBrightness");
+            using var col = s.Get();
+            foreach (ManagementObject mo in col)
+            {
+                using (mo)
+                {
+                    if (mo["Levels"] is not byte[] levels || levels.Length == 0)
+                        continue;
+                    byte best = levels[0];
+                    int bestDist = Math.Abs(levels[0] - requested);
+                    for (int i = 1; i < levels.Length; i++)
+                    {
+                        int d = Math.Abs(levels[i] - requested);
+                        if (d < bestDist) { bestDist = d; best = levels[i]; }
+                    }
+                    return best;
+                }
+            }
+        }
+        catch { }
+        return requested;
     }
 
     // ---- Overlay forms -------------------------------------------------
