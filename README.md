@@ -155,9 +155,10 @@ Include the following when submitting issues after encountering problems:
 - Windows version
 - Surface device model
 - Surface app version
+- Charging tray app version (latest is v1.2.0)
 - Screenshot of your Surface app manually opened and fully rendered (charging panel open if possible)
 - Screenshot of the error dialog
-- Error or crash log files in your program folder as mentioned above
+- Settings.ini, surface-error.log, crash.log, basically all these log files in your program folder (whole thing)
 - Steps to reproduce error / what were you doing when you encounter the error
 - Any additional details or even video capture if possible
 
