@@ -160,6 +160,7 @@ Include the following when submitting issues after encountering problems:
 - Screenshot of the error dialog
 - Settings.ini, surface-error.log, crash.log, basically all these log files in your program folder (whole thing)
 - Steps to reproduce error / what were you doing when you encounter the error
+- For scheduler issues: Windows sleep/screen-off settings and what you did during simulated sleep
 - Any additional details or even video capture if possible
 
 Note: This is a work in progress and only tested on one or few devices, so there may likely be issues and limited testing environment to reproduce issues. Issue reports will be helpful and I will attempt to patch issues.
