@@ -73,7 +73,7 @@ Latest release on the [Releases](../../releases) tab. Two packages:
 
 Find your CPU at **Settings → System → About → System type**. Unzip, double-click `SurfaceChargingTray.exe`. No install, no admin.
 
-Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) , a Windows standard framework (i.e. PowerToys, Terminal, Files).Windows offers a direct install link on first launch if missing.
+Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8.0/runtime) , a Windows standard framework (i.e. PowerToys, Terminal, Files). Windows offers a direct install link on first launch if missing.
 
 ## Compatibility
 
@@ -95,7 +95,7 @@ The Surface app's package family name varies between Surface generations; auto-d
 
 ## Charging-mode scheduler
 
-Surface charging modes can only be changed through the Surface app's UI, and Windows doesn't render that UI when the device is truly asleep or has its screen off — so a normal scheduled task at 5 AM finds nothing to click. The scheduler works around this with "simulated sleep": keeping the device technically active while it looks asleep, so the Surface app stays drivable.
+Surface charging modes can only be changed through the Surface app's UI, and Windows doesn't render that UI when the device is truly asleep or has its screen off — so a normal scheduled task at 5 AM doesn't activate. The scheduler works around this with "simulated sleep": only use if needed.
 
 ### How to use it
 
@@ -126,6 +126,8 @@ Surface charging modes can only be changed through the Surface app's UI, and Win
 `surface-error.log` and `crash.log` live next to the .exe — auto-rotating at 500 lines so they stay small. **Please attach them when filing a GitHub issue** (see *Flagging issues in Github* below) — they contain the diagnostic info needed to debug your report.
 
 ## Flagging issues in Github
+
+Diagnostic tool coming to help improve compatibility support!
 
 Include the following when submitting issues after encountering problems:
 
