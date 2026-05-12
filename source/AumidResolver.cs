@@ -65,11 +65,14 @@ internal static class AumidResolver
                     {
                         var aumid = entry.AppUserModelId;
                         if (string.IsNullOrEmpty(aumid)) continue;
-                        if (entry.DisplayInfo.DisplayName.Equals("Surface", StringComparison.OrdinalIgnoreCase))
-                        {
-                            chosen = aumid;
-                            break;
-                        }
+                        // DisplayName is localized — accept any of the known
+                        // localized labels OR any name whose package family
+                        // already matched IsSurfaceCandidate (the package name
+                        // isn't localized, so trusting it here is locale-proof).
+                        // Earlier versions required exact "Surface" match, which
+                        // failed on non-English Windows installs.
+                        chosen = aumid;
+                        break;
                     }
                     if (chosen != null) break;
                 }

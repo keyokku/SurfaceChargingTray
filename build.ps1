@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src  = Join-Path $root 'source'
-$dist = Join-Path $root 'dist\v1.2.0'
+$dist = Join-Path $root 'dist\v1.2.1'
 
 # Stop a running tray so the .exe isn't locked.
 Get-Process -Name SurfaceChargingTray -ErrorAction SilentlyContinue | Stop-Process -Force

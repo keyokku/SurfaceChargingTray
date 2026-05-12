@@ -49,7 +49,7 @@ All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **[v1.2.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.0)** *(latest)* | 2026-05-11 | Charging-mode scheduler. Press a hotkey before bed; the device stays active behind a black overlay until your set time, flips charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler-how-it-works) below. **No AHK package this release — `.exe` builds only.** |
+| **[v1.2.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.1)** *(latest)* | 2026-05-12 | Charging-mode scheduler. Press a hotkey before bed; the device stays active behind a black overlay until your set time, flips charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler-how-it-works) below. **Better multilingual + structural detection for the Surface app, more diagnostic logging when detection fails. No AHK package — `.exe` builds only.** |
 | **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
 | **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** | 2026-05-10 | Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. |
 | **[v1.0.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.0.0)** | 2026-05-09 | Initial release. Charging-mode tray icon, light/dark theme, configurable hotkeys for the four modes + cycle, auto-start at Windows login, three packages (arm64 / x64 / AHK). |
@@ -62,8 +62,8 @@ Get the latest from the [Releases](../../releases) tab. Two packages this releas
 
 | Package | Use it on |
 |---|---|
-| `SurfaceChargingTray-v1.2.0-arm64.zip` | Snapdragon Surfaces, native build (Pro 12, Pro X, Pro 11 / Laptop 7 Snapdragon variants) |
-| `SurfaceChargingTray-v1.2.0-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon Surfaces via Windows on ARM emulation. |
+| `SurfaceChargingTray-v1.2.1-arm64.zip` | Snapdragon Surfaces, native build (Pro 12, Pro X, Pro 11 / Laptop 7 Snapdragon variants) |
+| `SurfaceChargingTray-v1.2.1-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon Surfaces via Windows on ARM emulation. |
 
 To find your CPU: **Settings → System → About → System type**.
 
@@ -145,7 +145,7 @@ Either way, your original brightness and Power-mode setting are restored when si
 
 Two log files live next to the .exe (so the package stays portable):
 
-- `surface-error.log` — operational errors plus a `[INFO] Started v1.2.0.0` heartbeat on each launch and scheduled-fire result lines. Capped at 500 lines, ISO-8601 timestamped.
+- `surface-error.log` — operational errors plus a `[INFO] Started v1.2.1.0` heartbeat on each launch and scheduled-fire result lines. Capped at 500 lines, ISO-8601 timestamped.
 - `crash.log` — captures unhandled .NET exceptions with full stack traces. Same rotating policy.
 
 Both are safe to delete at any time. If you click something and nothing happens AND no log entry appears, the app died before reaching the click handler — open Windows Event Viewer → Applications and look for an `Application Error` entry naming `SurfaceChargingTray.exe` for the OS-level crash code.
@@ -157,7 +157,7 @@ Include the following when submitting issues after encountering problems:
 - Windows version
 - Surface device model
 - Surface app version
-- Charging tray app version (latest is v1.2.0)
+- Charging tray app version (latest is v1.2.1)
 - Screenshot of your Surface app manually opened and fully rendered (charging panel open if possible)
 - Screenshot of the error dialog
 - Settings.ini, surface-error.log, crash.log, basically all these log files in your program folder (whole thing)
@@ -179,7 +179,7 @@ powershell -ExecutionPolicy Bypass -File build.ps1            # both arm64 + x64
 powershell -ExecutionPolicy Bypass -File build.ps1 -Arch x64  # just one
 ```
 
-Output lands in `dist/v1.2.0/<arch>/SurfaceChargingTray.exe` — single-file framework-dependent (~25 MB). Recipients need the .NET 8 Desktop Runtime installed (free, one-time).
+Output lands in `dist/v1.2.1/<arch>/SurfaceChargingTray.exe` — single-file framework-dependent (~25 MB). Recipients need the .NET 8 Desktop Runtime installed (free, one-time).
 
 ## Repo layout
 
