@@ -344,11 +344,17 @@ internal sealed class TrayAppContext : ApplicationContext
     private void ShowLastError()
     {
         if (string.IsNullOrEmpty(_lastError))
+        {
             MessageBox.Show("No errors recorded. Last action succeeded.",
                 "Surface tray", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
         else
-            MessageBox.Show(_lastError, "Last error",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        {
+            // ErrorDialog adds clickable links to the diagnostic tool +
+            // GitHub thread when the message matches a detection-failure
+            // pattern; falls back to a plain error display otherwise.
+            ErrorDialog.Show(null, _lastError);
+        }
     }
 
     // ---- Tray icon + menu state ---------------------------------------
