@@ -70,37 +70,104 @@ internal static class DiagnosticRunner
         }
         TLog($"Surface app resolved: {appInfo.Aumid} (v{appInfo.Version})");
 
-        // ---- Acquire process (launch if not running) ----
+        // ---- Acquire process (must already be running — Run Test does NOT
+        // launch). Forcing the user to use Launch Surface first means they
+        // can navigate to a specific page (e.g. Battery & charging fully
+        // expanded) before capture. Run Test then captures whatever's
+        // visible — predictable, no race.
         progress("Finding Surface app process...");
-        Process? proc = null;
-        try
+        Process? proc = SurfaceApp.FindRunningProcess();
+        if (proc == null)
         {
-            proc = SurfaceApp.FindRunningProcess();
-            if (proc != null)
-            {
-                TLog($"Surface app already running, PID={proc.Id}, title='{SafeTitle(proc)}'");
-            }
-            else
-            {
-                TLog("Surface app not running; launching.");
-                progress("Launching Surface app...");
-                SurfaceApp.Launch(appInfo.Aumid);
-                proc = SurfaceApp.WaitForProcess(ProcessWaitMs);
-                if (proc == null)
-                {
-                    TLog("[ERR] Timed out waiting for Surface app process.");
-                    var partial = ComposeOutput(log, appInfo, runningPid: null, treeText: null,
-                        elementsCount: 0, system: CollectSystemInfo(), settingsIni: TryReadSettingsIni(outDir));
-                    File.WriteAllText(txtPath, partial);
-                    return new Result(false, txtPath, null,
-                        "Launched the Surface app but couldn't find its window within 30 seconds. Diagnostic saved.", 0);
-                }
-                TLog($"Launched: PID={proc.Id}, title='{SafeTitle(proc)}'");
-            }
+            TLog("[ERR] Surface app not running — user must click 'Launch Surface' first.");
+            var partial = ComposeOutput(log, appInfo, runningPid: null, treeText: null,
+                elementsCount: 0, system: CollectSystemInfo(), settingsIni: TryReadSettingsIni(outDir));
+            File.WriteAllText(txtPath, partial);
+            return new Result(false, txtPath, null,
+                "Surface app isn't running. Click 'Launch Surface' first, navigate to the page that's failing, then click 'Run Test' again.",
+                0);
         }
-        catch (Exception ex)
+        TLog($"Surface app running, PID={proc.Id}, title='{SafeTitle(proc)}'");
+
+        // Settle window — covers the case where the user clicked Launch
+        // Surface and immediately clicked Run Test. Cold-launched Surface
+        // app needs ~1-2 seconds to populate its content UIA tree; 2.5s
+        // gives margin. Even on a long-running Surface app this adds only
+        // 2.5s to a 15-30s diagnostic run.
+        progress("Letting Surface app settle...");
+        Thread.Sleep(2500);
+        TLog("Settle delay complete (2.5s).");
+
+        // Run the SAME detection the main app uses. Two purposes:
+        //   1. Expand the Battery & charging card automatically if it's
+        //      collapsed, so the tree walk below captures its contents
+        //      regardless of UI state.
+        //   2. Report whether the main app's detection logic would have
+        //      found this user's card — making the diagnostic directly
+        //      actionable for "main app says card not found" reports.
+        string detectionReport = "(not attempted)";
+        if (proc.MainWindowHandle != IntPtr.Zero)
         {
-            TLog($"[ERR] Process acquisition: {ex.GetType().Name}: {ex.Message}");
+            try
+            {
+                progress("Running main-app detection logic...");
+                var winForDetection = AutomationElement.FromHandle(proc.MainWindowHandle);
+                if (winForDetection != null)
+                {
+                    // Throwaway SettingsModel — UiaCache uses it for cache,
+                    // but on a fresh run there's no cache to consult. Any
+                    // writes it does will be cleaned up at run-end.
+                    var throwawaySettings = new SurfaceChargingTray.SettingsModel();
+                    var card = SurfaceChargingTray.UiaCache.FindBatteryCard(
+                        winForDetection, throwawaySettings, 8000);
+                    if (card == null)
+                    {
+                        detectionReport = "FAILED — main app's UiaCache.FindBatteryCard returned null on this device. "
+                                        + "Tree dump below shows what UIA exposes; main app would fail the same way.";
+                        TLog("[INFO] Main-app detection: card NOT found.");
+                    }
+                    else
+                    {
+                        string cardName = "", cardId = "";
+                        try { cardName = (card.GetCurrentPropertyValue(AutomationElement.NameProperty) as string ?? "").Trim(); } catch { }
+                        try { cardId   = (card.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string ?? "").Trim(); } catch { }
+                        detectionReport = $"SUCCESS — main app's UiaCache.FindBatteryCard found card: "
+                                        + $"Name='{cardName}' AutomationId='{cardId}'";
+                        TLog($"[INFO] Main-app detection: card found, Name='{cardName}' Id='{cardId}'.");
+
+                        // Expand the card if collapsed so tree walk captures
+                        // its children. ExpandIfCollapsed is replicated
+                        // here (it's a tiny private method on
+                        // SurfaceController in the main app).
+                        try
+                        {
+                            if (card.TryGetCurrentPattern(ExpandCollapsePattern.Pattern, out object pat))
+                            {
+                                var ec = (ExpandCollapsePattern)pat;
+                                if (ec.Current.ExpandCollapseState != ExpandCollapseState.Expanded)
+                                {
+                                    ec.Expand();
+                                    Thread.Sleep(500);
+                                    TLog("[INFO] Card was collapsed — expanded for capture.");
+                                }
+                                else
+                                {
+                                    TLog("[INFO] Card already expanded — left as-is.");
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            TLog($"[WARN] Could not expand card: {ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                detectionReport = $"ERRORED — exception during detection: {ex.GetType().Name}: {ex.Message}";
+                TLog($"[ERR] Detection threw: {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         // ---- Screenshot via PrintWindow ----
@@ -163,7 +230,7 @@ internal static class DiagnosticRunner
         progress("Writing diagnostic file...");
         var system = CollectSystemInfo();
         var settingsIni = TryReadSettingsIni(outDir);
-        var output = ComposeOutput(log, appInfo, proc?.Id, treeText, elementsCount, system, settingsIni);
+        var output = ComposeOutput(log, appInfo, proc?.Id, treeText, elementsCount, system, settingsIni, detectionReport);
         try
         {
             File.WriteAllText(txtPath, output);
@@ -175,6 +242,18 @@ internal static class DiagnosticRunner
             return new Result(false, txtPath, pngOutPath,
                 "Failed to write diagnostic file: " + ex.Message, elementsCount);
         }
+
+        // Clean up transient files UiaCache / Logger created as side-effects
+        // of compile-included main-app code. surface-error.log we keep since
+        // its content is folded into the diagnostic output above (and the
+        // user might find it useful as standalone reference). The settings.ini
+        // is junk from a throwaway SettingsModel; delete it.
+        try
+        {
+            var transientSettings = Path.Combine(outDir, "settings.ini");
+            if (File.Exists(transientSettings)) File.Delete(transientSettings);
+        }
+        catch { }
 
         try { proc?.Dispose(); } catch { }
 
@@ -194,13 +273,30 @@ internal static class DiagnosticRunner
         public int LastProgressCount;
     }
 
+    // Redacts possessive-form first names from a UIA Name string.
+    // Microsoft auto-names paired Surface accessories using the owner's
+    // MS-account display name (e.g. "Angelo's Surface Headphones"). Without
+    // this pass the diagnostic file would leak the user's first name into
+    // a publicly-posted bug report. Regex matches a capitalized word
+    // immediately followed by "'s" — conservative; covers the common case.
+    // False positives like "Microsoft's" → "[REDACTED]'s" are harmless for
+    // diagnostic purposes since the surrounding context is preserved.
+    private static readonly System.Text.RegularExpressions.Regex PossessiveNamePattern =
+        new(@"\b([A-Z][a-z]+)'s\b", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string RedactPii(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return s;
+        return PossessiveNamePattern.Replace(s, "[REDACTED]'s");
+    }
+
     private static void WalkElement(AutomationElement e, StringBuilder sb, int depth, WalkContext ctx)
     {
         if (ctx.Count >= MaxTreeElements) { ctx.Truncated = true; return; }
         if (DateTime.Now > ctx.Deadline)  { ctx.BudgetExpired = true; return; }
 
         string name = "", id = "", ct = "";
-        try { name = (e.GetCurrentPropertyValue(AutomationElement.NameProperty)        as string ?? "").Trim(); } catch { }
+        try { name = RedactPii((e.GetCurrentPropertyValue(AutomationElement.NameProperty)        as string ?? "").Trim()); } catch { }
         try { id   = (e.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string ?? "").Trim(); } catch { }
         try
         {
@@ -444,14 +540,15 @@ internal static class DiagnosticRunner
         string? treeText,
         int elementsCount,
         string system,
-        string? settingsIni)
+        string? settingsIni,
+        string detectionReport = "(not attempted — Surface app not acquired)")
     {
         var sb = new StringBuilder();
         sb.AppendLine("=================================================================");
         sb.AppendLine("  Surface Charging Tray — Diagnostic Report");
         sb.AppendLine("=================================================================");
         sb.Append("Generated: ").AppendLine(DateTimeOffset.Now.ToString("yyyy-MM-ddTHH:mm:sszzz"));
-        sb.AppendLine("Tool version: 1.0.0");
+        sb.AppendLine("Tool version: 1.0.1");
         sb.AppendLine();
 
         sb.AppendLine("## System");
@@ -471,6 +568,10 @@ internal static class DiagnosticRunner
             sb.Append("Version:             ").AppendLine(appInfo.Version           ?? "(unknown)");
             sb.Append("Running PID:         ").AppendLine(runningPid?.ToString() ?? "(not running / not detected)");
         }
+        sb.AppendLine();
+
+        sb.AppendLine("## Main-app detection result");
+        sb.AppendLine(detectionReport);
         sb.AppendLine();
 
         sb.AppendLine("## UIA Tree (exhaustive)");

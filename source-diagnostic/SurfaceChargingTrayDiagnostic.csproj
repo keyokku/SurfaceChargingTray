@@ -10,8 +10,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>SurfaceChargingTrayDiagnostic</RootNamespace>
     <AssemblyName>SurfaceChargingTrayDiagnostic</AssemblyName>
-    <Version>1.0.0</Version>
-    <FileVersion>1.0.0.0</FileVersion>
+    <Version>1.0.1</Version>
+    <FileVersion>1.0.1.0</FileVersion>
     <Product>Surface Charging Tray Diagnostic</Product>
     <Authors>Keyokku</Authors>
   </PropertyGroup>
@@ -19,6 +19,31 @@
   <ItemGroup>
     <!-- WMI for device info + brightness levels -->
     <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
+  <!--
+    Compile-include the main app's UIA detection + supporting plumbing so the
+    diagnostic uses LITERALLY the same code as the tray app. If a future
+    diagnostic run finds the Battery & charging card, we know the main app
+    would have found it too. If detection fails here, the tray app's failure
+    is reproducible. Files stay in source/ (single source of truth); the
+    diagnostic just compiles them alongside its own code. Side effects (a
+    transient settings.ini + surface-error.log created next to the diagnostic
+    exe) are cleaned up at run-end.
+  -->
+  <ItemGroup>
+    <Compile Include="..\source\UiaCache.cs">
+      <Link>Shared\UiaCache.cs</Link>
+    </Compile>
+    <Compile Include="..\source\Settings.cs">
+      <Link>Shared\Settings.cs</Link>
+    </Compile>
+    <Compile Include="..\source\Logger.cs">
+      <Link>Shared\Logger.cs</Link>
+    </Compile>
+    <Compile Include="..\source\StateStore.cs">
+      <Link>Shared\StateStore.cs</Link>
+    </Compile>
   </ItemGroup>
 
 </Project>
