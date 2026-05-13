@@ -522,7 +522,7 @@ internal class SettingsForm : Form
 
         if (hh < 0 && mm < 0)
         {
-            _scheduleStatus.Text      = "(not set — hotkey enters fake-sleep without a fire)";
+            _scheduleStatus.Text      = "(not set — hotkey enters simulated sleep without a fire)";
             _scheduleStatus.ForeColor = grayFg;
             if (_btnSave != null) _btnSave.Enabled = true;
         }
