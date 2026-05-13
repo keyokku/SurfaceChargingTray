@@ -23,6 +23,18 @@ internal sealed class DiagnosticForm : Form
     private readonly Button _btnOpenGitHub;
     private readonly Button _btnClose;
 
+    // Drives button enable/disable based on Surface app state. Ticks every
+    // second; Launch is enabled iff the Surface app is NOT running, Run Test
+    // is enabled iff it IS. Removes the foot-gun of clicking Run Test before
+    // the app is up.
+    private readonly System.Windows.Forms.Timer _stateTimer;
+    // While true, _stateTimer doesn't fight with an in-progress operation
+    // that's already disabled all buttons.
+    private bool _runInProgress;
+    // null = haven't checked yet; true/false = last observed running state.
+    // Used to only update status text on actual transitions, not every tick.
+    private bool? _lastKnownRunning;
+
     public DiagnosticForm()
     {
         Text = "Surface Charging Tray — Diagnostic Tool";
@@ -120,6 +132,57 @@ internal sealed class DiagnosticForm : Form
         Controls.Add(btnRow);    // Bottom — added second, reserves its strip
         AcceptButton = _btnRunTest;
         CancelButton = _btnClose;
+
+        // Drive Launch/Run-Test enabling from Surface app state. First tick
+        // happens on Load below so the very first visible state is correct.
+        _stateTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _stateTimer.Tick += (_, _) => UpdateButtonStates();
+        Load        += (_, _) => { _stateTimer.Start(); UpdateButtonStates(); };
+        FormClosing += (_, _) => { _stateTimer.Stop(); _stateTimer.Dispose(); };
+    }
+
+    /// <summary>
+    /// Set the two operation buttons (Launch Surface, Run Test) to
+    /// <paramref name="enabled"/>. Show output folder, Open GitHub, and
+    /// Close are independent utility actions that never conflict with an
+    /// in-progress operation — they stay enabled throughout.
+    /// </summary>
+    private void SetOperationButtonsEnabled(bool enabled)
+    {
+        _btnOpenSurface.Enabled = enabled;
+        _btnRunTest.Enabled     = enabled;
+    }
+
+    /// <summary>
+    /// Poll the Surface-app state and configure Launch / Run Test accordingly.
+    /// While a click handler is in progress (_runInProgress = true), this
+    /// no-ops so it doesn't fight the in-progress disable state.
+    /// </summary>
+    private void UpdateButtonStates()
+    {
+        if (_runInProgress) return;
+
+        bool running;
+        try
+        {
+            using var p = SurfaceApp.FindRunningProcess();
+            running = p != null;
+        }
+        catch { running = false; }
+
+        _btnOpenSurface.Enabled = !running;
+        _btnRunTest.Enabled     = running;
+        // _btnOpenFolder, _btnOpenGitHub, _btnClose stay enabled always.
+
+        // Only update status on a state transition so we don't clobber any
+        // status the user might be reading mid-glance.
+        if (_lastKnownRunning != running)
+        {
+            _lastKnownRunning = running;
+            SetStatus(running
+                ? "Surface app is open. Navigate to the page you want captured, then click Run Test."
+                : "Surface app isn't open. Click Launch Surface to start it.");
+        }
     }
 
     private static string ComposeInstructionsText() =>
@@ -128,9 +191,10 @@ internal sealed class DiagnosticForm : Form
       + "saved next to this .exe; you'll manually post it to a GitHub thread.\n"
       + "\n"
       + "Steps:\n"
-      + "  1. Open the Microsoft Surface app and navigate to the page that's "
-          + "failing (e.g. Battery & charging).\n"
-      + "  2. Click 'Run Test' below. Takes ~15-30 seconds.\n"
+      + "  1. Click 'Launch Surface' to open the Surface app (skip if it's "
+          + "already open). Navigate to the page that's failing — usually "
+          + "Battery & charging.\n"
+      + "  2. Click 'Run Test'. Takes ~15-30 seconds.\n"
       + "  3. Attach the resulting .txt + .png files as a comment on the "
           + "diagnostic-results thread:\n"
       + "     " + GitHubIssueUrl;
@@ -147,8 +211,9 @@ internal sealed class DiagnosticForm : Form
 
     private async Task OnOpenSurfaceAsync()
     {
+        _runInProgress = true;
+        SetOperationButtonsEnabled(false);
         SetStatus("Resolving Surface app...");
-        SetButtonsEnabled(false);
         try
         {
             var info = await Task.Run(SurfaceApp.Resolve);
@@ -159,36 +224,34 @@ internal sealed class DiagnosticForm : Form
                   + "Install or reinstall it from the Microsoft Store, then try again.",
                     "Surface app not found",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                SetStatus("Status: Surface app not installed.");
-                return;
-            }
-
-            var existing = SurfaceApp.FindRunningProcess();
-            if (existing != null)
-            {
-                existing.Dispose();
-                SetStatus("Status: Surface app already running.");
                 return;
             }
 
             SetStatus("Launching Surface app...");
             await Task.Run(() => SurfaceApp.Launch(info.Aumid));
             await Task.Delay(2500);
-            SetStatus("Status: Surface app launched. Navigate to the failing page, then click Run Test.");
+            // Status text from here is handled by UpdateButtonStates' state-
+            // transition logic — it'll flip to "Surface app is open..." once
+            // the next timer tick observes the running process.
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, "Could not open Surface app:\n" + ex.Message,
                 "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            SetStatus("Status: error opening Surface app.");
         }
-        finally { SetButtonsEnabled(true); }
+        finally
+        {
+            _runInProgress = false;
+            _lastKnownRunning = null;  // force status refresh on next tick
+            UpdateButtonStates();
+        }
     }
 
     private async Task OnRunTestAsync()
     {
+        _runInProgress = true;
+        SetOperationButtonsEnabled(false);
         SetStatus("Starting diagnostic run...");
-        SetButtonsEnabled(false);
 
         var progress = new Progress<string>(SetStatus);
         DiagnosticRunner.Result? result = null;
@@ -200,24 +263,28 @@ internal sealed class DiagnosticForm : Form
         {
             MessageBox.Show(this, "Diagnostic run crashed:\n" + ex,
                 "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            SetStatus("Status: diagnostic crashed (see message).");
-            SetButtonsEnabled(true);
+            SetStatus("Diagnostic crashed (see message).");
             return;
         }
-        finally { SetButtonsEnabled(true); }
+        finally
+        {
+            _runInProgress = false;
+            _lastKnownRunning = null;
+            UpdateButtonStates();
+        }
 
         if (result.Success)
         {
-            SetStatus($"Status: ✓ Done. {result.ElementsCaptured} UIA elements captured.");
+            SetStatus($"✓ Done. {result.ElementsCaptured} UIA elements captured.");
             ShowSuccessDialog(result);
         }
         else
         {
-            SetStatus("Status: completed with errors (file still saved).");
+            SetStatus("Completed with errors (file still saved).");
             MessageBox.Show(this,
                 $"{result.Message}\n\nFiles saved:\n  {result.TxtPath}"
                   + (result.PngPath != null ? $"\n  {result.PngPath}" : "")
-                  + $"\n\nPlease attach them to a new GitHub issue:\n  {GitHubIssueUrl}",
+                  + $"\n\nPlease post to the GitHub thread:\n  {GitHubIssueUrl}",
                 "Diagnostic — partial result",
                 MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
@@ -290,13 +357,6 @@ internal sealed class DiagnosticForm : Form
     {
         if (InvokeRequired) { BeginInvoke(() => SetStatus(text)); return; }
         _status.Text = "Status: " + text;
-    }
-
-    private void SetButtonsEnabled(bool enabled)
-    {
-        _btnOpenSurface.Enabled = enabled;
-        _btnRunTest.Enabled     = enabled;
-        _btnOpenFolder.Enabled  = enabled;
     }
 
     private static void OpenFolder()
