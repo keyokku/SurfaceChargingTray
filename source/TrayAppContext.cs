@@ -578,16 +578,22 @@ internal sealed class TrayAppContext : ApplicationContext
         // tray launch and now.
         var s = SettingsModel.Load();
         int delay = 0;
-        string? mode = null;
-        string? duration = null;
+        ScheduledAction? action = null;
 
         if (!string.IsNullOrEmpty(s.ScheduleTime) && !string.IsNullOrEmpty(s.ScheduleMode))
         {
             delay = SecondsUntilNextOccurrence(s.ScheduleTime!);
             if (delay > 0)
             {
-                mode = s.ScheduleMode;
-                duration = s.ScheduleDuration;
+                // Variant-B schedule: serialized as ScheduleMode='oneshot' (no
+                // duration). Variant-A schedule: ScheduleMode is one of
+                // 'adaptive'/'80'/'100' with optional ScheduleDuration. The
+                // action subtype encapsulates which SurfaceController call
+                // fires at delay-end.
+                if (s.ScheduleMode == "oneshot")
+                    action = new TriggerOneShotAction();
+                else
+                    action = new SetModeAction { Mode = s.ScheduleMode!, Duration = s.ScheduleDuration };
             }
         }
 
@@ -595,8 +601,7 @@ internal sealed class TrayAppContext : ApplicationContext
         try
         {
             err = FakeSleepMode.Enter(
-                scheduledMode:     mode,
-                scheduledDuration: duration,
+                action:            action,
                 delaySeconds:      delay,
                 autoExitAfterFire: s.ScheduleAutoExit);
         }
@@ -693,6 +698,7 @@ internal sealed class TrayAppContext : ApplicationContext
             "100" when s.ScheduleDuration == "1week" => "100% 1w",
             "100" when s.ScheduleDuration == "1day"  => "100% 1d",
             "100"      => "100%",
+            "oneshot"  => "100% override",
             _          => s.ScheduleMode!
         };
         return $"{s.ScheduleTime} — {modeText}";  // em-dash separator
