@@ -214,6 +214,23 @@ internal static class SurfaceController
 
             ExpandIfCollapsed(bcGroup);
 
+            // v1.3.0 silent variant detection — runs alongside the existing
+            // flow without changing variant A behavior. Result lands in
+            // settings.ini for later phases to consume. Variant B users still
+            // hit the existing "no radio selected" error path below; the
+            // tray's variant-aware menu (Phase 3) will short-circuit before
+            // RefreshState is even called for them.
+            try
+            {
+                var appVer = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
+                UiaCache.DetectVariant(bcGroup, settings, appVer);
+            }
+            catch (Exception detEx)
+            {
+                // Detection is best-effort; never fail RefreshState because of it.
+                Logger.Error($"[ERR ] Silent DetectVariant in RefreshState: {detEx.GetType().Name}: {detEx.Message}");
+            }
+
             // FindSelectedModeKey internally walks the 3 radios via the layered lookup
             // (so its cache gets populated as a side effect) and returns the modeKey
             // of whichever radio reports active via SelectionItem / Toggle / Legacy.
