@@ -92,6 +92,12 @@ internal class SettingsModel
         { "100-1day",        new HotkeyEntry { Enabled = false, Key = "^+3" } },
         { "100-1week",       new HotkeyEntry { Enabled = false, Key = "^+4" } },
         { "cycle",           new HotkeyEntry { Enabled = false, Key = "^+B" } },
+        // Variant B: single one-shot 'Charge to 100%' override. v1.3.0+.
+        // Default Ctrl+Shift+1 — same key slot as 'adaptive' on variant A.
+        // No collision in practice because ApplyHotkeys filters action
+        // registrations by current detected variant: variant A skips
+        // 'oneshot', variant B skips 'adaptive'/'80'/'100-*'/'cycle'.
+        { "oneshot",         new HotkeyEntry { Enabled = false, Key = "^+1" } },
         // Windows Power modes
         { "power-efficient", new HotkeyEntry { Enabled = false, Key = "^+5" } },
         { "power-balanced",  new HotkeyEntry { Enabled = false, Key = "^+6" } },
