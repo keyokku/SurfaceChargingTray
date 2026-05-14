@@ -87,6 +87,17 @@ Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8
 
 **Tested on:** Surface Pro 12 (Snapdragon ARM64).
 
+**Supported devices** — modern Surfaces whose Surface app exposes the three-mode *Battery & charging* UI (Adaptive / Limit to 80% / Charge to 100%):
+
+- Surface Pro 8, 9, 10, 11, 12
+- Surface Laptop 5, 6, 7 (Intel and Snapdragon)
+- Surface Laptop Studio 2
+- Surface Laptop Go 2, 3
+
+If your model isn't listed but you see all three modes in **Surface app → Battery & charging**, the tool should work — open an issue if it doesn't.
+
+Older Surfaces with a single-button "Charge to 100%" override only (e.g. Surface Laptop Studio 1, Surface Pro 7) — see the [v1.3.0-beta1 preview](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.0-beta1).
+
 ## Under the hood
 
 **Charging modes** — Microsoft offers no documented API to change them, so the tool briefly opens the Surface app **off-screen**, drives the right radio button on its *Battery & charging* page via Windows [UI Automation](https://learn.microsoft.com/en-us/windows/win32/winauto/entry-uiauto-win32), then closes the app. The whole cycle takes a few seconds.
