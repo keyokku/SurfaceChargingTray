@@ -31,6 +31,26 @@ internal class SettingsForm : Form
 
     private readonly List<Row> _rows = new();
 
+    // ---- Variant awareness (v1.3.0+) ---------------------------------
+    //
+    // Snapshot of the device's detected UI variant at dialog construction.
+    // Drives which hotkey rows are visible (variant A: mode rows; variant
+    // B: oneshot row), the info banner text, and the schedule tab shape
+    // (Phase 5). 'Re-detect device' button overwrites _model.DetectedVariant
+    // in-memory and updates the banner; the user must reopen the dialog to
+    // see updated row visibility (avoids the complexity of re-rendering
+    // mid-dialog).
+    private SurfaceUiVariant _variant = SurfaceUiVariant.Unknown;
+    private Label _variantBanner = null!;
+    private Button _btnRedetect = null!;
+
+    private static SurfaceUiVariant ParseVariantString(string? s) => s switch
+    {
+        "A" => SurfaceUiVariant.A,
+        "B" => SurfaceUiVariant.B,
+        _   => SurfaceUiVariant.Unknown
+    };
+
     // ---- Schedule controls (live in the Schedule tab) ------------------
     private ComboBox _scheduleMode    = null!;
     private ComboBox _scheduleDuration = null!;
@@ -48,6 +68,15 @@ internal class SettingsForm : Form
     {
         _model = model;
         _openOnScheduleTab = openOnScheduleTab;
+        // First-launch default (DetectedVariant null) is variant A — the
+        // overwhelmingly common case for existing v1.2.x upgraders. The
+        // tray's RefreshState writes the real variant to settings.ini on
+        // first interaction; the next time the user opens this dialog the
+        // banner + row visibility reflect the true variant.
+        _variant = ParseVariantString(_model.DetectedVariant);
+        if (_variant == SurfaceUiVariant.Unknown && string.IsNullOrEmpty(_model.DetectedVariant))
+            _variant = SurfaceUiVariant.A;
+
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96f, 96f);
         Font = new Font("Segoe UI", 9.5f);
@@ -173,6 +202,34 @@ internal class SettingsForm : Form
             Padding = new Padding(0, 0, 0, 16)
         };
 
+        // Variant banner + Re-detect button (v1.3.0+) — gives the user a
+        // visible record of which UI variant their device was classified as,
+        // and a way to force a fresh detection if their Surface app updated.
+        var variantRow = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        variantRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        variantRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _variantBanner = new Label
+        {
+            Text = BuildVariantBannerText(),
+            AutoSize = true, MaximumSize = new Size(620, 0),
+            ForeColor = SystemColors.GrayText, Tag = "gray",
+            Margin = new Padding(0, 8, 16, 0)
+        };
+        _btnRedetect = new Button
+        {
+            Text = "Re-detect device", Size = new Size(170, 32),
+            Margin = new Padding(0, 4, 0, 0)
+        };
+        _btnRedetect.Click += (_, _) => RunRedetect();
+        variantRow.Controls.Add(_variantBanner, 0, 0);
+        variantRow.Controls.Add(_btnRedetect,   1, 0);
+        header.Controls.Add(variantRow);
+
         // General settings (live above hotkeys so they're seen first).
         _autoStartCheck = new CheckBox
         {
@@ -206,12 +263,26 @@ internal class SettingsForm : Form
         var keyChoices = BuildKeyChoices();
         int rowIdx = 1;
 
-        rowIdx = AddSectionHeader(grid, rowIdx, "Charging modes");
-        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "adaptive",  "Adaptive");
-        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "80",        "Limit to 80%");
-        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1day",  "Charge to 100% (1 day)");
-        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1week", "Charge to 100% (1 week)");
-        rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "cycle",     "Cycle through charging modes");
+        // Variant-aware "Charging modes" section. Variant A users see the
+        // five-row classic set; variant B users see only the oneshot row
+        // (their device only exposes that one action); Unknown shows no
+        // charging rows at all (the user should run the diagnostic tool
+        // before binding hotkeys to actions that may not work).
+        if (_variant == SurfaceUiVariant.A)
+        {
+            rowIdx = AddSectionHeader(grid, rowIdx, "Charging modes");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "adaptive",  "Adaptive");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "80",        "Limit to 80%");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1day",  "Charge to 100% (1 day)");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "100-1week", "Charge to 100% (1 week)");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "cycle",     "Cycle through charging modes");
+        }
+        else if (_variant == SurfaceUiVariant.B)
+        {
+            rowIdx = AddSectionHeader(grid, rowIdx, "Charging override");
+            rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "oneshot",   "Charge to 100% (one-shot override)");
+        }
+        // Unknown: no charging-rows section — banner explains why.
 
         rowIdx = AddSectionHeader(grid, rowIdx, "Windows Power mode");
         rowIdx = AddHotkeyRow(grid, rowIdx, keyChoices, "power-efficient", "Best power efficiency");
@@ -722,6 +793,69 @@ internal class SettingsForm : Form
         _model.Save();
         Saved?.Invoke();
         Close();
+    }
+
+    // ---- Variant banner + Re-detect -----------------------------------
+
+    private string BuildVariantBannerText()
+    {
+        var version = _model.DetectedAtAppVersion ?? "(not yet detected)";
+        return _variant switch
+        {
+            SurfaceUiVariant.A =>
+                $"Detected device variant: A — three charging modes available (Adaptive / 80% / 100%).  "
+                + $"Last checked at app v{version}.",
+            SurfaceUiVariant.B =>
+                $"Detected device variant: B — your Surface app exposes only the 'Charge to 100%' "
+                + $"one-shot override. Other modes aren't available on this device.  "
+                + $"Last checked at app v{version}.",
+            _ =>
+                "Device variant: not yet detected. Click 'Refresh status' in the tray menu, or run "
+                + "the diagnostic tool if detection keeps failing."
+        };
+    }
+
+    private void RunRedetect()
+    {
+        _btnRedetect.Enabled = false;
+        _variantBanner.Text = "Re-detecting device... (this opens the Surface app briefly)";
+
+        // Run RefreshState on a thread-pool thread so the dialog stays
+        // responsive. RefreshState's internal DetectVariant writes the
+        // result to settings.ini; we reload the model on completion to
+        // pick up the new value, then update the banner.
+        Task.Run(() =>
+        {
+            string? err = null;
+            try { err = SurfaceController.RefreshState(); }
+            catch (Exception ex) { err = ex.Message; }
+
+            BeginInvoke(() =>
+            {
+                // Reload from disk to pick up the new DetectedVariant +
+                // DetectedAtAppVersion the silent detection wrote.
+                var fresh = SettingsModel.Load();
+                _model.DetectedVariant      = fresh.DetectedVariant;
+                _model.DetectedAtAppVersion = fresh.DetectedAtAppVersion;
+                _model.OneShotButtonId      = fresh.OneShotButtonId;
+                _model.OneShotButtonName    = fresh.OneShotButtonName;
+
+                var newVariant = ParseVariantString(_model.DetectedVariant);
+                bool variantChanged = newVariant != _variant;
+                _variant = newVariant;
+
+                _variantBanner.Text = BuildVariantBannerText();
+                if (variantChanged)
+                {
+                    _variantBanner.Text += "  Save and reopen this dialog to refresh the hotkey rows.";
+                }
+                if (err != null)
+                {
+                    _variantBanner.Text += $"  (Refresh reported: {err})";
+                }
+                _btnRedetect.Enabled = true;
+            });
+        });
     }
 
     // ---- Theming -------------------------------------------------------

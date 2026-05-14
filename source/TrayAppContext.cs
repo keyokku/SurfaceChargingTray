@@ -411,33 +411,19 @@ internal sealed class TrayAppContext : ApplicationContext
             _ui.Post(_ =>
             {
                 _busy = false;
-                if (err != null)
-                {
-                    // Variant B refreshes hit the existing "no radio
-                    // selected" error path today because RefreshStateOnce
-                    // still walks radios after the silent variant detection.
-                    // The error message is unhelpful for variant B users,
-                    // but the silent detection still wrote DetectedVariant=B
-                    // to settings before throwing — so we re-apply the menu
-                    // and suppress the error if we now know we're on B.
-                    // Phase 4 (variant-aware refresh path) will route B users
-                    // around the radio walk entirely; this is the bridge.
-                    if (ParseVariant(_settings.DetectedVariant) == SurfaceUiVariant.B)
-                    {
-                        ClearError();
-                    }
-                    else
-                    {
-                        ReportError(err);
-                    }
-                }
-                else { ClearError(); UpdateMenuFromCache(); }
+                if (err != null) ReportError(err);
+                else             { ClearError(); UpdateMenuFromCache(); }
 
-                // Variant may have flipped after the silent DetectVariant call
-                // inside RefreshState — reshape the menu if so. Cheap (a few
-                // bool assignments); no-op when the variant hasn't changed.
+                // Variant may have flipped after the DetectVariant call
+                // inside RefreshState — reshape the menu if so. Cheap (a
+                // few bool assignments); no-op when the variant hasn't
+                // changed. Also re-apply hotkeys, since variant-specific
+                // hotkey filtering depends on _currentVariant.
                 if (ParseVariant(_settings.DetectedVariant) != _currentVariant)
+                {
                     ApplyVariantToMenu();
+                    ApplyHotkeys();
+                }
 
                 // Refresh power mode too — cheap (one Win32 call).
                 UpdatePowerModeChecks();
@@ -742,16 +728,32 @@ internal sealed class TrayAppContext : ApplicationContext
             { "100-1day",  () => HotkeyTriggered(() => StartSetMode("100", "1day"))      },
             { "100-1week", () => HotkeyTriggered(() => StartSetMode("100", "1week"))     },
             { "cycle",     () => HotkeyTriggered(() => CycleMode())                      },
+            { "oneshot",   () => HotkeyTriggered(() => StartTriggerOneShot())            },
             { "power-efficient", () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Efficient))   },
             { "power-balanced",  () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Balanced))    },
             { "power-perf",      () => HotkeyTriggered(() => SetPower(PowerMode.Mode.Performance)) },
             { "schedule-toggle", () => HotkeyTriggered(() => ToggleScheduledFakeSleep())           }
         };
+
+        // Variant-specific filter: skip actions that don't apply to the
+        // current variant. Two reasons:
+        //   1. UX: a variant B user shouldn't accidentally activate Adaptive
+        //      via a hotkey that has no underlying mode to switch to.
+        //   2. Collision avoidance: 'oneshot' and 'adaptive' share the
+        //      default Ctrl+Shift+1. ApplyHotkeys gracefully picks the
+        //      right one based on the detected variant.
+        // 'Unknown' variant registers all hotkeys (let the user discover
+        // for themselves which work) — same as v1.2.x behavior.
+        var skipForA = new HashSet<string> { "oneshot" };
+        var skipForB = new HashSet<string> { "adaptive", "80", "100-1day", "100-1week", "cycle" };
+
         var failures = new List<string>();
         foreach (var (action, h) in _settings.Hotkeys)
         {
             if (!h.Enabled || string.IsNullOrEmpty(h.Key)) continue;
             if (!actionMap.TryGetValue(action, out var cb)) continue;
+            if (_currentVariant == SurfaceUiVariant.A && skipForA.Contains(action)) continue;
+            if (_currentVariant == SurfaceUiVariant.B && skipForB.Contains(action)) continue;
             var err = _hotkeys.Register(h.Key, cb);
             if (err != null) failures.Add(err);
         }

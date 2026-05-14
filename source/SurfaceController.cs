@@ -332,23 +332,65 @@ internal static class SurfaceController
 
             ExpandIfCollapsed(bcGroup);
 
-            // v1.3.0 silent variant detection — runs alongside the existing
-            // flow without changing variant A behavior. Result lands in
-            // settings.ini for later phases to consume. Variant B users still
-            // hit the existing "no radio selected" error path below; the
-            // tray's variant-aware menu (Phase 3) will short-circuit before
-            // RefreshState is even called for them.
+            // v1.3.0 variant detection — classifies the card structurally
+            // and writes the result to settings.ini. The branch below uses
+            // the detected variant to pick the right "current state" probe:
+            // variant A reads the selected radio, variant B reads the
+            // one-shot button's IsEnabled. Either way the caller gets a
+            // clean null on success.
+            SurfaceUiVariant variant;
             try
             {
                 var appVer = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "unknown";
-                UiaCache.DetectVariant(bcGroup, settings, appVer);
+                variant = UiaCache.DetectVariant(bcGroup, settings, appVer);
             }
             catch (Exception detEx)
             {
-                // Detection is best-effort; never fail RefreshState because of it.
-                Logger.Error($"[ERR ] Silent DetectVariant in RefreshState: {detEx.GetType().Name}: {detEx.Message}");
+                // Detection is best-effort; treat as Unknown and fall through
+                // to the variant-A radio walk so existing-shape devices still
+                // refresh cleanly even if the structural classifier crashed.
+                Logger.Error($"[ERR ] DetectVariant in RefreshState: {detEx.GetType().Name}: {detEx.Message}");
+                variant = SurfaceUiVariant.Unknown;
             }
 
+            // ---- Variant B branch -------------------------------------
+            // No radios to inspect; the only "state" to surface is whether
+            // the one-shot button is currently enabled (Smart Charging is
+            // actively limiting). We don't persist that here — the tray
+            // polls it live via TriggerOneShot's pre-flight IsEnabled
+            // guard. Returning null = refresh succeeded; the caller
+            // updates UI from the cached variant + button presence.
+            if (variant == SurfaceUiVariant.B)
+            {
+                // Verify the button is reachable. If structural detection
+                // identified the card as B but the button is no longer
+                // findable (e.g. Surface app update during this session),
+                // surface a clean error so the tray can show it.
+                var btn = UiaCache.FindOneShotButton(bcGroup, settings);
+                if (btn == null)
+                {
+                    bcGroup = LookupBatteryCardForcingRediscovery(win, settings);
+                    if (bcGroup != null)
+                    {
+                        ExpandIfCollapsed(bcGroup);
+                        btn = UiaCache.FindOneShotButton(bcGroup, settings);
+                    }
+                }
+                if (btn == null)
+                {
+                    UiaCache.LogTreeSnapshot(win, "one-shot button not found in RefreshState (variant B)");
+                    throw new Exception("Couldn't find the 'Charge to 100%' override button. The Surface app's UI may have changed; run the diagnostic tool and share the report.");
+                }
+
+                Thread.Sleep(200);
+                CloseProc(proc);
+                proc = null;
+
+                ClearError();
+                return null;
+            }
+
+            // ---- Variant A / Unknown branch (v1.2.x behavior) ---------
             // FindSelectedModeKey internally walks the 3 radios via the layered lookup
             // (so its cache gets populated as a side effect) and returns the modeKey
             // of whichever radio reports active via SelectionItem / Toggle / Legacy.
