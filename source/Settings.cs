@@ -54,6 +54,36 @@ internal class SettingsModel
     public string? Charge100RadioId     { get; set; }
     public string? Charge100RadioName   { get; set; }
 
+    // ---- Variant detection (v1.3.0+) -----------------------------------
+    //
+    // Surface devices ship two distinct UI shapes for the Battery & charging
+    // card. Variant A: the three-radio classic (Adaptive / 80% / 100%) we
+    // targeted in v1.0-v1.2. Variant B: a single one-shot "Charge to 100%"
+    // override button — no radios, no mode concept — observed on certain
+    // older Surfaces (e.g. SLS gen 1 / users with paused Smart Charging UIs).
+    //
+    // DetectedVariant is filled by UiaCache.DetectVariant on the first
+    // successful card lookup of each launch. DetectedAtAppVersion stamps
+    // which app version performed the detection, so a future release whose
+    // detection logic improved automatically re-detects on first run
+    // (we treat a version mismatch as "stale, re-detect").
+    //
+    // OneShotButtonId/Name cache the structural identifiers of the variant B
+    // button so the next launch's lookup hits Layer 1 (cached AndCondition)
+    // instead of re-walking the card.
+
+    /// <summary>"A" (3 radios) / "B" (one-shot button) / "Unknown" / null (never detected).</summary>
+    public string? DetectedVariant       { get; set; }
+
+    /// <summary>The SurfaceChargingTray app version that performed the detection. Stale → re-detect.</summary>
+    public string? DetectedAtAppVersion  { get; set; }
+
+    /// <summary>Cached AutomationId of the variant B one-shot button.</summary>
+    public string? OneShotButtonId       { get; set; }
+
+    /// <summary>Cached Name of the variant B one-shot button (disambiguator, not detection key).</summary>
+    public string? OneShotButtonName     { get; set; }
+
     public static readonly Dictionary<string, HotkeyEntry> Defaults = new()
     {
         // Charging modes
@@ -123,14 +153,18 @@ internal class SettingsModel
                 {
                     switch (key.ToLowerInvariant())
                     {
-                        case "battery_card_id":      s.BatteryCardId      = val; break;
-                        case "battery_card_name":    s.BatteryCardName    = val; break;
-                        case "adaptive_radio_id":    s.AdaptiveRadioId    = val; break;
-                        case "adaptive_radio_name":  s.AdaptiveRadioName  = val; break;
-                        case "limit80_radio_id":     s.Limit80RadioId     = val; break;
-                        case "limit80_radio_name":   s.Limit80RadioName   = val; break;
-                        case "charge100_radio_id":   s.Charge100RadioId   = val; break;
-                        case "charge100_radio_name": s.Charge100RadioName = val; break;
+                        case "battery_card_id":        s.BatteryCardId        = val; break;
+                        case "battery_card_name":      s.BatteryCardName      = val; break;
+                        case "adaptive_radio_id":      s.AdaptiveRadioId      = val; break;
+                        case "adaptive_radio_name":    s.AdaptiveRadioName    = val; break;
+                        case "limit80_radio_id":       s.Limit80RadioId       = val; break;
+                        case "limit80_radio_name":     s.Limit80RadioName     = val; break;
+                        case "charge100_radio_id":     s.Charge100RadioId     = val; break;
+                        case "charge100_radio_name":   s.Charge100RadioName   = val; break;
+                        case "detected_variant":       s.DetectedVariant      = val; break;
+                        case "detected_at_app_version":s.DetectedAtAppVersion = val; break;
+                        case "oneshot_button_id":      s.OneShotButtonId      = val; break;
+                        case "oneshot_button_name":    s.OneShotButtonName    = val; break;
                     }
                 }
                 else if (section == "schedule")
@@ -153,7 +187,9 @@ internal class SettingsModel
         !string.IsNullOrEmpty(BatteryCardId)        || !string.IsNullOrEmpty(BatteryCardName)
      || !string.IsNullOrEmpty(AdaptiveRadioId)      || !string.IsNullOrEmpty(AdaptiveRadioName)
      || !string.IsNullOrEmpty(Limit80RadioId)       || !string.IsNullOrEmpty(Limit80RadioName)
-     || !string.IsNullOrEmpty(Charge100RadioId)     || !string.IsNullOrEmpty(Charge100RadioName);
+     || !string.IsNullOrEmpty(Charge100RadioId)     || !string.IsNullOrEmpty(Charge100RadioName)
+     || !string.IsNullOrEmpty(DetectedVariant)      || !string.IsNullOrEmpty(DetectedAtAppVersion)
+     || !string.IsNullOrEmpty(OneShotButtonId)      || !string.IsNullOrEmpty(OneShotButtonName);
 
     private static void AppendIfSet(List<string> lines, string key, string? val)
     {
@@ -197,14 +233,18 @@ internal class SettingsModel
             {
                 lines.Add("");
                 lines.Add("[uia-cache]");
-                AppendIfSet(lines, "battery_card_id",      BatteryCardId);
-                AppendIfSet(lines, "battery_card_name",    BatteryCardName);
-                AppendIfSet(lines, "adaptive_radio_id",    AdaptiveRadioId);
-                AppendIfSet(lines, "adaptive_radio_name",  AdaptiveRadioName);
-                AppendIfSet(lines, "limit80_radio_id",     Limit80RadioId);
-                AppendIfSet(lines, "limit80_radio_name",   Limit80RadioName);
-                AppendIfSet(lines, "charge100_radio_id",   Charge100RadioId);
-                AppendIfSet(lines, "charge100_radio_name", Charge100RadioName);
+                AppendIfSet(lines, "battery_card_id",         BatteryCardId);
+                AppendIfSet(lines, "battery_card_name",       BatteryCardName);
+                AppendIfSet(lines, "adaptive_radio_id",       AdaptiveRadioId);
+                AppendIfSet(lines, "adaptive_radio_name",     AdaptiveRadioName);
+                AppendIfSet(lines, "limit80_radio_id",        Limit80RadioId);
+                AppendIfSet(lines, "limit80_radio_name",      Limit80RadioName);
+                AppendIfSet(lines, "charge100_radio_id",      Charge100RadioId);
+                AppendIfSet(lines, "charge100_radio_name",    Charge100RadioName);
+                AppendIfSet(lines, "detected_variant",        DetectedVariant);
+                AppendIfSet(lines, "detected_at_app_version", DetectedAtAppVersion);
+                AppendIfSet(lines, "oneshot_button_id",       OneShotButtonId);
+                AppendIfSet(lines, "oneshot_button_name",     OneShotButtonName);
             }
             File.WriteAllLines(Paths.Settings, lines);
         }

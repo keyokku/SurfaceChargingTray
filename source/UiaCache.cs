@@ -31,6 +31,24 @@ namespace SurfaceChargingTray;
 /// RadioButton) and silently wiped on validation failure so the next call
 /// rediscovers from scratch.
 /// </summary>
+/// <summary>
+/// Two distinct UI shapes the Surface app exposes for charging-mode control:
+///
+///   A = the three-radio classic (Adaptive / 80% / 100%) we targeted in
+///       v1.0-v1.2. Mode-switching is meaningful; user picks an ongoing mode.
+///
+///   B = a single one-shot "Charge to 100%" override button. No radios, no
+///       mode concept — the device manages Smart Charging implicitly, and
+///       the user's only available action is "override to 100% for this
+///       charge cycle." Observed on older Surfaces and on certain newer
+///       Surface app builds with Smart Charging in a paused/limited state.
+///
+///   Unknown = card was located but neither variant signature matched
+///       (likely a Surface app version we haven't seen yet; falls through
+///       to today's error path with a pointer to the diagnostic tool).
+/// </summary>
+internal enum SurfaceUiVariant { Unknown, A, B }
+
 internal static class UiaCache
 {
     // ---- Multi-language Name lists -------------------------------------
@@ -216,6 +234,17 @@ internal static class UiaCache
         {
             s.Charge100RadioId = null; s.Charge100RadioName = null; changed = true;
         }
+        // Variant cache is also wiped on poisoning reset — if our radios were
+        // wrong, the variant we detected from them might be wrong too.
+        // DetectedAtAppVersion stays (it's a stamp, not a cache value).
+        if (s.DetectedVariant != null)
+        {
+            s.DetectedVariant = null; changed = true;
+        }
+        if (s.OneShotButtonId != null || s.OneShotButtonName != null)
+        {
+            s.OneShotButtonId = null; s.OneShotButtonName = null; changed = true;
+        }
         if (changed) s.Save();
     }
 
@@ -330,6 +359,219 @@ internal static class UiaCache
             catch { }
         }
         return null;
+    }
+
+    /// <summary>
+    /// Classify the Surface app's Battery & charging card into one of the
+    /// two known UI shapes (variant A = 3 radios, variant B = one-shot button)
+    /// or Unknown. Caller is responsible for having located + expanded the
+    /// card first.
+    ///
+    /// Detection logic is intentionally NAME-FREE for variant B — we rely on
+    /// the structural fact that variant B's card contains exactly one
+    /// Invoke-pattern Button (and no radios) rather than a localized name
+    /// match. This keeps the multilingual maintenance surface at exactly
+    /// one list (BatteryCardNames).
+    ///
+    /// Side effect: writes DetectedVariant + DetectedAtAppVersion to
+    /// <paramref name="settings"/> (and OneShotButtonId/Name on variant B).
+    /// Persisted immediately via settings.Save() inside the helpers.
+    /// </summary>
+    public static SurfaceUiVariant DetectVariant(
+        AutomationElement card, SettingsModel settings, string appVersion)
+    {
+        SurfaceUiVariant variant;
+        try
+        {
+            // Variant A signature: all three radios discoverable under the card.
+            // We use the SAME FindRadio path the rest of the app uses (cached
+            // ID/Name → multi-language list) so if the radios exist at all,
+            // the variant-A classification matches whatever SetMode would see.
+            var rAdaptive = FindRadio(card, "adaptive", settings, 2000);
+            var r80       = FindRadio(card, "80",       settings, 2000);
+            var r100      = FindRadio(card, "100",      settings, 2000);
+            if (rAdaptive != null && r80 != null && r100 != null)
+            {
+                variant = SurfaceUiVariant.A;
+            }
+            else
+            {
+                // Variant B signature: card with no usable radio set, but
+                // exactly one invokable Button child (the "override to 100%"
+                // one-shot).
+                var btn = FindOneShotButton(card, settings);
+                variant = btn != null ? SurfaceUiVariant.B : SurfaceUiVariant.Unknown;
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[ERR ] DetectVariant: {ex.GetType().Name}: {ex.Message}");
+            variant = SurfaceUiVariant.Unknown;
+        }
+
+        // Persist result. Always update — every-launch-detect policy means
+        // we want the latest result reflected, including variant flips after
+        // a Surface app update changes the card UI.
+        string variantStr = variant.ToString();
+        bool changed = false;
+        if (settings.DetectedVariant != variantStr)
+            { settings.DetectedVariant = variantStr; changed = true; }
+        if (settings.DetectedAtAppVersion != appVersion)
+            { settings.DetectedAtAppVersion = appVersion; changed = true; }
+        if (changed) settings.Save();
+
+        Logger.Error($"[INFO] DetectVariant: {variantStr} (cached for app v{appVersion})");
+        return variant;
+    }
+
+    /// <summary>
+    /// Structural search for variant B's lone "Charge to 100%" override button.
+    /// Returns null if no suitable button is found, or if multiple ambiguous
+    /// candidates exist with no clear winner.
+    ///
+    /// Algorithm:
+    ///   1. Layer 1 (fast path): if OneShotButtonId AND OneShotButtonName
+    ///      are cached, look for that exact element via AndCondition.
+    ///   2. Layer 2 (structural): walk Button descendants of the card,
+    ///      keep only those supporting InvokePattern, exclude the card's
+    ///      own ExpandCollapse chevron, exclude obviously-non-action buttons
+    ///      (zero-area / not visible). If exactly one remains → that's it.
+    ///   3. Tiebreaker (multiple candidates): pick the largest by bounding-
+    ///      rect area. Log all candidates so future bug reports surface
+    ///      ambiguity.
+    /// </summary>
+    public static AutomationElement? FindOneShotButton(
+        AutomationElement card, SettingsModel settings)
+    {
+        // Layer 1: cached AndCondition.
+        if (!string.IsNullOrEmpty(settings.OneShotButtonId) &&
+            !string.IsNullOrEmpty(settings.OneShotButtonName))
+        {
+            try
+            {
+                var hit = card.FindFirst(TreeScope.Subtree,
+                    new AndCondition(
+                        new PropertyCondition(AutomationElement.AutomationIdProperty, settings.OneShotButtonId),
+                        new PropertyCondition(AutomationElement.NameProperty,         settings.OneShotButtonName)));
+                if (hit != null && IsInvokableButton(hit)) return hit;
+            }
+            catch { }
+        }
+
+        // Layer 2: structural enumeration.
+        var candidates = new System.Collections.Generic.List<AutomationElement>();
+        try
+        {
+            var allButtons = card.FindAll(TreeScope.Subtree,
+                new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+
+            // Capture the card's own ExpandCollapse chevron (if any) so we
+            // can exclude it. The chevron is technically a button-like
+            // element in some Surface app builds.
+            int[]? cardRuntimeId = null;
+            try { cardRuntimeId = card.GetRuntimeId(); } catch { }
+
+            foreach (AutomationElement b in allButtons)
+            {
+                if (!IsInvokableButton(b)) continue;
+
+                // Exclude card's own expand-collapse element. Compare via
+                // RuntimeId since reference equality across UIA queries is
+                // not reliable.
+                if (cardRuntimeId != null)
+                {
+                    try
+                    {
+                        var bid = b.GetRuntimeId();
+                        if (bid != null && RuntimeIdsEqual(bid, cardRuntimeId)) continue;
+                    }
+                    catch { }
+                }
+
+                // Exclude zero-area / invisible buttons (e.g. hidden helpers).
+                try
+                {
+                    var rect = (System.Windows.Rect)b.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty);
+                    if (rect.IsEmpty || rect.Width < 4 || rect.Height < 4) continue;
+                }
+                catch { }
+
+                candidates.Add(b);
+            }
+        }
+        catch (System.Exception ex)
+        {
+            Logger.Error($"[ERR ] FindOneShotButton enumeration: {ex.GetType().Name}: {ex.Message}");
+            return null;
+        }
+
+        if (candidates.Count == 0) return null;
+
+        AutomationElement chosen;
+        if (candidates.Count == 1)
+        {
+            chosen = candidates[0];
+        }
+        else
+        {
+            // Multiple buttons in the card — log all then pick by largest
+            // bounding rect (action buttons are the prominent ones; "Learn
+            // more"-style links typically render smaller).
+            var sb = new System.Text.StringBuilder();
+            sb.Append("[WARN] FindOneShotButton: ").Append(candidates.Count)
+              .Append(" candidate buttons in card, applying largest-rect tiebreaker:\n");
+            double bestArea = -1;
+            chosen = candidates[0];
+            foreach (var c in candidates)
+            {
+                string cname = "", cid = "";
+                double area = 0;
+                try { cname = (c.GetCurrentPropertyValue(AutomationElement.NameProperty)         as string ?? "").Trim(); } catch { }
+                try { cid   = (c.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string ?? "").Trim(); } catch { }
+                try
+                {
+                    var r = (System.Windows.Rect)c.GetCurrentPropertyValue(AutomationElement.BoundingRectangleProperty);
+                    area = r.Width * r.Height;
+                }
+                catch { }
+                sb.Append("  - name='").Append(cname).Append("' id='").Append(cid)
+                  .Append("' area=").Append(area.ToString("F0")).Append('\n');
+                if (area > bestArea) { bestArea = area; chosen = c; }
+            }
+            Logger.Error(sb.ToString().TrimEnd());
+        }
+
+        // Cache the chosen button's identifiers for next-launch fast path.
+        try
+        {
+            var newId   = chosen.GetCurrentPropertyValue(AutomationElement.AutomationIdProperty) as string;
+            var newName = chosen.GetCurrentPropertyValue(AutomationElement.NameProperty)         as string;
+            bool changed = false;
+            if (!string.IsNullOrEmpty(newId)   && newId   != settings.OneShotButtonId)   { settings.OneShotButtonId   = newId;   changed = true; }
+            if (!string.IsNullOrEmpty(newName) && newName != settings.OneShotButtonName) { settings.OneShotButtonName = newName; changed = true; }
+            if (changed) settings.Save();
+        }
+        catch { }
+
+        return chosen;
+    }
+
+    private static bool IsInvokableButton(AutomationElement e)
+    {
+        try
+        {
+            var ct = (ControlType)e.GetCurrentPropertyValue(AutomationElement.ControlTypeProperty);
+            if (ct != ControlType.Button) return false;
+            return e.TryGetCurrentPattern(InvokePattern.Pattern, out _);
+        }
+        catch { return false; }
+    }
+
+    private static bool RuntimeIdsEqual(int[] a, int[] b)
+    {
+        if (a.Length != b.Length) return false;
+        for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
+        return true;
     }
 
     /// <summary>
