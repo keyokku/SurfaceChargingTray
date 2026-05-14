@@ -8,6 +8,46 @@ using System.Windows.Forms;
 namespace SurfaceChargingTray;
 
 /// <summary>
+/// Abstract action that simulated-sleep's scheduled-fire timer can invoke
+/// when the deferred wake time arrives. The two concrete subtypes map 1:1
+/// to the two Surface app UI variants we support:
+///
+///   SetModeAction = variant A — flips one of the three charging-mode
+///                   radios. The v1.2.x scheduler exclusively used this;
+///                   variant A users keep this exact behavior in v1.3.0.
+///
+///   TriggerOneShotAction = variant B — invokes the single 'Charge to
+///                          100%' override button. Added in v1.3.0 to
+///                          give variant B users an equivalent scheduler.
+///
+/// Adding a new variant later is a matter of dropping in another subtype;
+/// FakeSleepMode itself stays variant-agnostic.
+/// </summary>
+internal abstract class ScheduledAction
+{
+    /// <summary>Run the action. Returns null on success, error string on failure.</summary>
+    public abstract string? Execute();
+
+    /// <summary>One-line human-readable description for log lines. Not localized.</summary>
+    public abstract string Describe();
+}
+
+internal sealed class SetModeAction : ScheduledAction
+{
+    public string  Mode     { get; set; } = "";
+    public string? Duration { get; set; }
+    public override string? Execute() => SurfaceController.SetMode(Mode, Duration);
+    public override string Describe() =>
+        Duration != null ? $"SetMode({Mode}, {Duration})" : $"SetMode({Mode})";
+}
+
+internal sealed class TriggerOneShotAction : ScheduledAction
+{
+    public override string? Execute() => SurfaceController.TriggerOneShot();
+    public override string Describe() => "TriggerOneShot";
+}
+
+/// <summary>
 /// "Simulated sleep" mode — the engine behind the v1.2.0 charging-mode
 /// scheduler. Class name keeps the original "FakeSleep" internally; the
 /// user-visible wording is "simulated sleep".
@@ -51,10 +91,12 @@ internal static class FakeSleepMode
     private static PowerMode.Mode? _origPowerMode;
     private static bool _autoExitAfterFire;
     private static readonly List<Form> _overlays = new();
-    // Scheduled SetMode while simulated sleep is active. One-shot timer.
+    // Scheduled action to run while simulated sleep is active. One-shot timer.
+    // Generalized in v1.3.0 from {mode, duration} pair to a polymorphic
+    // ScheduledAction so variant B's TriggerOneShot can ride the same engine
+    // as variant A's SetMode. Null when no fire is scheduled.
     private static System.Windows.Forms.Timer? _scheduledFire;
-    private static string? _scheduledMode;
-    private static string? _scheduledDuration;
+    private static ScheduledAction? _scheduledAction;
     // Suppress the overlay's "reassert topmost on Deactivate" handler while
     // a scheduled SetMode is in flight. Otherwise the handler will pull
     // focus back from the Surface app mid-UIA-traversal — the same race
@@ -67,18 +109,38 @@ internal static class FakeSleepMode
     // ---- Enter ---------------------------------------------------------
 
     /// <summary>
-    /// Enter fake-sleep. If <paramref name="scheduledMode"/> is non-null,
-    /// a one-shot timer fires <paramref name="delaySeconds"/> later and
-    /// calls <see cref="SurfaceController.SetMode"/> in the background —
-    /// while fake-sleep is still holding the device awake, so UWP renders
-    /// normally and UIA can drive the Surface app's UI tree.
+    /// Variant A back-compat shim. Existing callers (TrayAppContext schedule-
+    /// toggle) pass a charging mode + optional duration; we wrap those into a
+    /// <see cref="SetModeAction"/> and delegate to the canonical action-based
+    /// overload below. Behavior identical to v1.2.x.
+    /// </summary>
+    public static string? Enter(
+        string? scheduledMode = null,
+        string? scheduledDuration = null,
+        int delaySeconds = 0,
+        bool autoExitAfterFire = false)
+    {
+        ScheduledAction? action = null;
+        if (!string.IsNullOrEmpty(scheduledMode))
+            action = new SetModeAction { Mode = scheduledMode, Duration = scheduledDuration };
+        return Enter(action, delaySeconds, autoExitAfterFire);
+    }
+
+    /// <summary>
+    /// Enter fake-sleep. If <paramref name="action"/> is non-null, a one-shot
+    /// timer fires <paramref name="delaySeconds"/> later and runs the action
+    /// in the background — while fake-sleep is still holding the device
+    /// awake, so UWP renders normally and UIA can drive the Surface app's
+    /// UI tree.
+    ///
+    /// Action types: <see cref="SetModeAction"/> for variant A (radio flip)
+    /// or <see cref="TriggerOneShotAction"/> for variant B (button invoke).
     ///
     /// Returns null on success, or a short error string if entry was refused
     /// (e.g. on battery). Caller is responsible for surfacing the message.
     /// </summary>
     public static string? Enter(
-        string? scheduledMode = null,
-        string? scheduledDuration = null,
+        ScheduledAction? action,
         int delaySeconds = 0,
         bool autoExitAfterFire = false)
     {
@@ -151,22 +213,20 @@ internal static class FakeSleepMode
             return "Could not show the simulated-sleep overlay: " + ex.Message;
         }
 
-        // --- 4. Schedule the mode-change fire, if requested -------------
-        if (!string.IsNullOrEmpty(scheduledMode) && delaySeconds > 0)
+        // --- 4. Schedule the action fire, if requested -----------------
+        if (action != null && delaySeconds > 0)
         {
             try
             {
-                _scheduledMode     = scheduledMode;
-                _scheduledDuration = scheduledDuration;
+                _scheduledAction = action;
                 // System.Windows.Forms.Timer interval is Int32 ms — max
                 // ~24.85 days. Clamp defensively.
                 long ms = Math.Min((long)delaySeconds * 1000L, int.MaxValue);
                 _scheduledFire = new System.Windows.Forms.Timer { Interval = (int)ms };
                 _scheduledFire.Tick += OnScheduledFire;
                 _scheduledFire.Start();
-                var dur = scheduledDuration != null ? $" {scheduledDuration}" : "";
                 var autoEx = autoExitAfterFire ? " auto-exit" : "";
-                Logger.Error($"[INFO] Scheduled mode={scheduledMode}{dur} in {delaySeconds}s{autoEx}");
+                Logger.Error($"[INFO] Scheduled {action.Describe()} in {delaySeconds}s{autoEx}");
             }
             catch (Exception ex)
             {
@@ -179,13 +239,13 @@ internal static class FakeSleepMode
 
     private static void OnScheduledFire(object? sender, EventArgs e)
     {
-        // One-shot: stop immediately so we don't refire if SetMode takes
-        // longer than the interval (which it will).
+        // One-shot: stop immediately so we don't refire if the action takes
+        // longer than the interval (which it will — SetMode/TriggerOneShot
+        // can be 5-30s on a cold Surface app).
         try { _scheduledFire?.Stop(); } catch { }
 
-        var mode     = _scheduledMode;
-        var duration = _scheduledDuration;
-        if (string.IsNullOrEmpty(mode)) return;
+        var action = _scheduledAction;
+        if (action == null) return;
 
         // Suppress the overlay's Deactivate->reassert-topmost handler for
         // the duration of the UIA traversal. Yanking focus back from the
@@ -204,15 +264,15 @@ internal static class FakeSleepMode
                 // back behind our overlay after UIA is done.
                 SurfaceController.SkipWindowHide = false;
 
-                var err = SurfaceController.SetMode(mode!, duration);
+                var err = action.Execute();
                 if (err != null)
-                    Logger.Error($"[ERR ] Scheduled SetMode FAILED: {err}");
+                    Logger.Error($"[ERR ] Scheduled {action.Describe()} FAILED: {err}");
                 else
-                    Logger.Error($"[INFO] Scheduled SetMode OK — mode={mode}{(duration != null ? $" {duration}" : "")}");
+                    Logger.Error($"[INFO] Scheduled {action.Describe()} OK");
             }
             catch (Exception ex)
             {
-                Logger.Error($"[ERR ] Scheduled SetMode CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Logger.Error($"[ERR ] Scheduled {action.Describe()} CRASHED: {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
@@ -262,8 +322,7 @@ internal static class FakeSleepMode
             _scheduledFire?.Stop();
             _scheduledFire?.Dispose();
             _scheduledFire = null;
-            _scheduledMode = null;
-            _scheduledDuration = null;
+            _scheduledAction = null;
             _suppressTopmostReassert = false;
         }
         catch (Exception ex)

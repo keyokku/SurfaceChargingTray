@@ -178,6 +178,124 @@ internal static class SurfaceController
     }
 
     /// <summary>
+    /// Variant B equivalent of <see cref="SetMode"/>. Invokes the Surface
+    /// app's one-shot "Charge to 100%" override button. Returns null on
+    /// success, an error message on failure. Retries once on transient
+    /// UI-Automation binding failures (same logic as SetMode).
+    ///
+    /// No mode / duration parameters — variant B exposes exactly one
+    /// action. Does not write StateStore (variant B has no persistent
+    /// "current mode" concept; button enabled-state is read live).
+    /// </summary>
+    public static string? TriggerOneShot()
+    {
+        var err = TriggerOneShotOnce();
+        if (IsTransient(err))
+        {
+            Thread.Sleep(500);
+            err = TriggerOneShotOnce();
+        }
+        return err;
+    }
+
+    private static string? TriggerOneShotOnce()
+    {
+        Process? proc = null;
+        bool launchedByUs = false;
+
+        try
+        {
+            (proc, launchedByUs) = AcquireSurfaceWindow();
+
+            var localProc = proc;  // for capture in lambda
+            var win = WaitFor(() =>
+                {
+                    try { return AutomationElement.FromHandle(localProc.MainWindowHandle); }
+                    catch { return null; }
+                }, 5000);
+            if (win == null) throw new Exception("Could not bind UI Automation to the Surface window.");
+
+            var settings = Settings ?? SettingsModel.Load();
+            var bcGroup = LookupBatteryCard(win, settings);
+            if (bcGroup == null)
+            {
+                UiaCache.LogTreeSnapshot(win, "card not found in TriggerOneShot");
+                throw new Exception("'Battery & charging' card not found. Run the diagnostic tool and share the report.");
+            }
+
+            ExpandIfCollapsed(bcGroup);
+
+            var btn = UiaCache.FindOneShotButton(bcGroup, settings);
+            if (btn == null)
+            {
+                // Cache-poisoning retry — same shape as SetMode's retry.
+                bcGroup = LookupBatteryCardForcingRediscovery(win, settings);
+                if (bcGroup != null)
+                {
+                    ExpandIfCollapsed(bcGroup);
+                    btn = UiaCache.FindOneShotButton(bcGroup, settings);
+                }
+            }
+            if (btn == null)
+            {
+                UiaCache.LogTreeSnapshot(win, "one-shot button not found in TriggerOneShot");
+                throw new Exception("Couldn't find the 'Charge to 100%' override button. The Surface app's UI may have changed; run the diagnostic tool and share the report.");
+            }
+
+            // Refuse to click a disabled button. Disabled means Surface app
+            // is currently NOT limiting smart charging (or the override has
+            // already been triggered this cycle). Surfacing this to the
+            // caller is more useful than silently doing nothing — the tray
+            // already greys its menu item to mirror this state, but a
+            // scheduled fire might land at a moment the button is disabled
+            // and the user deserves to know.
+            try
+            {
+                bool enabled = (bool)btn.GetCurrentPropertyValue(AutomationElement.IsEnabledProperty);
+                if (!enabled)
+                    throw new Exception("'Charge to 100%' is currently disabled — Smart Charging isn't limiting right now, or the override was already triggered this cycle.");
+            }
+            catch (Exception readEx) when (readEx.Message.StartsWith("'Charge to 100%'"))
+            {
+                throw;  // rethrow the explicit guard above
+            }
+            catch
+            {
+                // IsEnabled read failed — proceed and let Invoke surface any error.
+            }
+
+            // Variant B's button is invoke-only (one-shot semantics). Use
+            // InvokePattern rather than SelectionItemPattern; the button
+            // has no "selected" state to inspect.
+            var inv = (InvokePattern)btn.GetCurrentPattern(InvokePattern.Pattern);
+            inv.Invoke();
+            Thread.Sleep(300);
+
+            Thread.Sleep(200);
+            CloseProc(proc);
+            proc = null;
+
+            ClearError();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            if (launchedByUs && proc != null)
+            {
+                TryCloseQuiet(proc);
+                proc = null;
+            }
+            WriteError(ex.Message);
+            return ex.Message;
+        }
+        finally
+        {
+            proc?.Dispose();
+            try { SetThreadExecutionState(ES_CONTINUOUS); } catch { }
+        }
+    }
+
+    /// <summary>
     /// Reads the current mode from the Surface app and updates the cache.
     /// Retries once on transient failures.
     /// </summary>
