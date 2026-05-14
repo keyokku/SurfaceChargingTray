@@ -160,6 +160,36 @@ internal static class DiagnosticRunner
                         {
                             TLog($"[WARN] Could not expand card: {ex.GetType().Name}: {ex.Message}");
                         }
+
+                        // v1.3.0+ variant classification. Same NAME-FREE
+                        // structural detection the main app uses. Adds one
+                        // line to the report: 'Detected variant: A | B |
+                        // Unknown' — tells us at a glance which code path
+                        // the main app's v1.3.0+ would take on this device.
+                        try
+                        {
+                            var detVariant = SurfaceChargingTray.UiaCache.DetectVariant(
+                                card, throwawaySettings, "diagnostic");
+                            string variantLine = detVariant switch
+                            {
+                                SurfaceChargingTray.SurfaceUiVariant.A =>
+                                    "Detected variant: A (three charging modes — Adaptive/80%/100% all findable).",
+                                SurfaceChargingTray.SurfaceUiVariant.B =>
+                                    "Detected variant: B (one-shot 'Charge to 100%' button — no radios, "
+                                    + $"OneShotButtonId='{throwawaySettings.OneShotButtonId ?? ""}' "
+                                    + $"OneShotButtonName='{throwawaySettings.OneShotButtonName ?? ""}').",
+                                _ =>
+                                    "Detected variant: Unknown (neither three-radio set nor a lone "
+                                    + "invokable Button found inside the card)."
+                            };
+                            detectionReport += "  " + variantLine;
+                            TLog($"[INFO] Variant detection: {detVariant}");
+                        }
+                        catch (Exception ex)
+                        {
+                            detectionReport += $"  Variant detection ERRORED: {ex.GetType().Name}: {ex.Message}";
+                            TLog($"[ERR] DetectVariant threw: {ex.GetType().Name}: {ex.Message}");
+                        }
                     }
                 }
             }
