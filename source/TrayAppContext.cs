@@ -60,10 +60,20 @@ internal sealed class TrayAppContext : ApplicationContext
     private string _lastError = "";
     private bool _busy = false;
 
+    // Tracks which UI variant the menu is currently shaped for so RunRefresh
+    // can detect post-detection variant flips and call ApplyVariantToMenu
+    // to reshape the menu without an app restart. Initialized from settings
+    // at construction; updated whenever ApplyVariantToMenu runs.
+    private SurfaceUiVariant _currentVariant = SurfaceUiVariant.Unknown;
+
     private readonly ToolStripMenuItem _miAdaptive;
     private readonly ToolStripMenuItem _mi80;
     private readonly ToolStripMenuItem _mi100Day;
     private readonly ToolStripMenuItem _mi100Week;
+    // Variant B's lone action — Surface app's one-shot "Charge to 100%"
+    // override button. Visible only when DetectedVariant=B; hidden in the
+    // variant A and Unknown menu shapes. Click invokes the button via UIA.
+    private readonly ToolStripMenuItem _mi100OneShot;
     // Schedule item — shows the saved time + mode in the label
     // (e.g. "Schedule: 21:00 — 80%" or "Schedule: (not set)") and opens
     // the Settings dialog directly on the Schedule tab.
@@ -102,10 +112,11 @@ internal sealed class TrayAppContext : ApplicationContext
         SurfaceController.Settings = _settings;
 
         _menu = new ContextMenuStrip { ShowImageMargin = true };
-        _miAdaptive  = new ToolStripMenuItem("Adaptive",                (Image?)null, (s, e) => StartSetMode("adaptive"));
-        _mi80        = new ToolStripMenuItem("Limit to 80%",            (Image?)null, (s, e) => StartSetMode("80"));
-        _mi100Day    = new ToolStripMenuItem("Charge to 100% (1 day)",  (Image?)null, (s, e) => StartSetMode("100", "1day"));
-        _mi100Week   = new ToolStripMenuItem("Charge to 100% (1 week)", (Image?)null, (s, e) => StartSetMode("100", "1week"));
+        _miAdaptive   = new ToolStripMenuItem("Adaptive",                (Image?)null, (s, e) => StartSetMode("adaptive"));
+        _mi80         = new ToolStripMenuItem("Limit to 80%",            (Image?)null, (s, e) => StartSetMode("80"));
+        _mi100Day     = new ToolStripMenuItem("Charge to 100% (1 day)",  (Image?)null, (s, e) => StartSetMode("100", "1day"));
+        _mi100Week    = new ToolStripMenuItem("Charge to 100% (1 week)", (Image?)null, (s, e) => StartSetMode("100", "1week"));
+        _mi100OneShot = new ToolStripMenuItem("Charge to 100%",          (Image?)null, (s, e) => StartTriggerOneShot());
 
         _miSchedule  = new ToolStripMenuItem("Schedule: (not set)",     (Image?)null, (s, e) => ShowSettings(openOnScheduleTab: true));
 
@@ -121,10 +132,15 @@ internal sealed class TrayAppContext : ApplicationContext
         _miShowError = new ToolStripMenuItem("Show last error",         (Image?)null, (s, e) => ShowLastError());
         _miExit      = new ToolStripMenuItem("Exit",                    (Image?)null, (s, e) => ExitThread());
 
-        // Layout: charging modes [---] Schedule, Power mode [---] secondary actions
+        // Layout: charging modes [---] Schedule, Power mode [---] secondary actions.
+        // All items always exist in the menu; ApplyVariantToMenu toggles
+        // visibility based on the detected variant. Variant A shows the
+        // four mode items; variant B shows only _mi100OneShot; Unknown
+        // hides all charging-specific items.
         _menu.Items.AddRange(new ToolStripItem[]
         {
             _miAdaptive, _mi80, _mi100Day, _mi100Week,
+            _mi100OneShot,
             new ToolStripSeparator(),
             _miSchedule,
             _miPower,
@@ -146,6 +162,7 @@ internal sealed class TrayAppContext : ApplicationContext
 
         ApplyTrayIcon();
         ApplyMenuTheme();
+        ApplyVariantToMenu();   // shapes the menu (variant A / B / Unknown) before first display
         UpdateMenuFromCache();
         UpdatePowerModeChecks();
         UpdateScheduleMenuLabel();
@@ -220,6 +237,10 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private (string mode, string? duration)? _pendingMode = null;
     private bool _pendingRefresh = false;
+    // Variant B's queued action — analog of _pendingMode, but the action is
+    // parameter-free so a bool suffices. Set when StartTriggerOneShot is
+    // called while _busy; consumed by ProcessPending.
+    private bool _pendingOneShot = false;
 
     private void StartSetMode(string mode, string? duration = null)
     {
@@ -262,13 +283,109 @@ internal sealed class TrayAppContext : ApplicationContext
             var (m, d) = _pendingMode.Value;
             _pendingMode = null;
             _pendingRefresh = false;   // mode change supersedes any pending refresh
+            _pendingOneShot = false;   // unreachable in practice (different variants) but defensive
             RunSetMode(m, d);
+        }
+        else if (_pendingOneShot)
+        {
+            _pendingOneShot = false;
+            _pendingRefresh = false;
+            RunTriggerOneShot();
         }
         else if (_pendingRefresh)
         {
             _pendingRefresh = false;
             RunRefresh();
         }
+    }
+
+    // ---- Variant B: one-shot override --------------------------------
+    //
+    // Mirrors StartSetMode / RunSetMode but uses SurfaceController.TriggerOneShot
+    // (variant B's only action). No mode / duration; the action is parameter-
+    // free. Queued via _pendingOneShot when fired during _busy. Variant A
+    // users never enter these paths — _mi100OneShot is hidden for them by
+    // ApplyVariantToMenu, and CycleMode only routes here when DetectedVariant=B.
+
+    private void StartTriggerOneShot()
+    {
+        if (_busy)
+        {
+            _pendingOneShot = true;
+            _pendingRefresh = false;   // one-shot reads/clears state itself
+            _icon.Text = ClampTooltip("Surface Charging: queued Charge to 100%");
+            return;
+        }
+        RunTriggerOneShot();
+    }
+
+    private void RunTriggerOneShot()
+    {
+        _busy = true;
+        _icon.Text = "Surface Charging: triggering...";
+
+        Task.Run(() =>
+        {
+            var err = SurfaceController.TriggerOneShot();
+            _ui.Post(_ =>
+            {
+                _busy = false;
+                if (err != null) ReportError(err);
+                else
+                {
+                    ClearError();
+                    // No StateStore mirror for variant B (no persistent mode);
+                    // tooltip reflects the action just performed.
+                    _icon.Text = ClampTooltip("Surface Charging: Charge to 100% triggered");
+                }
+                TrimWorkingSet();
+                ProcessPending();
+            }, null);
+        });
+    }
+
+    // ---- Variant-aware menu shaping ----------------------------------
+    //
+    // Toggles visibility of menu items based on the detected Surface UI
+    // variant. Called at construction (so the very first display has the
+    // right shape) and after every RunRefresh that flips the cached
+    // variant. All items live in the menu permanently; visibility is the
+    // only thing that changes — cheaper and less error-prone than tearing
+    // down + reconstructing items.
+
+    private static SurfaceUiVariant ParseVariant(string? s) => s switch
+    {
+        "A" => SurfaceUiVariant.A,
+        "B" => SurfaceUiVariant.B,
+        _   => SurfaceUiVariant.Unknown
+    };
+
+    private void ApplyVariantToMenu()
+    {
+        // Treat first-launch (DetectedVariant null) as variant A — the
+        // overwhelmingly common case for existing v1.2.x users upgrading.
+        // After the first RefreshState's silent detection writes the real
+        // variant to settings.ini, this method runs again with the right
+        // value and the menu adjusts if needed.
+        var v = ParseVariant(_settings.DetectedVariant);
+        if (v == SurfaceUiVariant.Unknown && string.IsNullOrEmpty(_settings.DetectedVariant))
+            v = SurfaceUiVariant.A;
+
+        _currentVariant = v;
+
+        bool isA = v == SurfaceUiVariant.A;
+        bool isB = v == SurfaceUiVariant.B;
+
+        _miAdaptive.Visible   = isA;
+        _mi80.Visible         = isA;
+        _mi100Day.Visible     = isA;
+        _mi100Week.Visible    = isA;
+        _mi100OneShot.Visible = isB;
+
+        // Schedule item: visible for A and B (Phase 5 makes the dialog's
+        // schedule section variant-aware). Hidden for Unknown — no
+        // actionable target to schedule.
+        _miSchedule.Visible = isA || isB;
     }
 
     private void StartRefresh()
@@ -294,8 +411,34 @@ internal sealed class TrayAppContext : ApplicationContext
             _ui.Post(_ =>
             {
                 _busy = false;
-                if (err != null) ReportError(err);
+                if (err != null)
+                {
+                    // Variant B refreshes hit the existing "no radio
+                    // selected" error path today because RefreshStateOnce
+                    // still walks radios after the silent variant detection.
+                    // The error message is unhelpful for variant B users,
+                    // but the silent detection still wrote DetectedVariant=B
+                    // to settings before throwing — so we re-apply the menu
+                    // and suppress the error if we now know we're on B.
+                    // Phase 4 (variant-aware refresh path) will route B users
+                    // around the radio walk entirely; this is the bridge.
+                    if (ParseVariant(_settings.DetectedVariant) == SurfaceUiVariant.B)
+                    {
+                        ClearError();
+                    }
+                    else
+                    {
+                        ReportError(err);
+                    }
+                }
                 else { ClearError(); UpdateMenuFromCache(); }
+
+                // Variant may have flipped after the silent DetectVariant call
+                // inside RefreshState — reshape the menu if so. Cheap (a few
+                // bool assignments); no-op when the variant hasn't changed.
+                if (ParseVariant(_settings.DetectedVariant) != _currentVariant)
+                    ApplyVariantToMenu();
+
                 // Refresh power mode too — cheap (one Win32 call).
                 UpdatePowerModeChecks();
                 TrimWorkingSet();
@@ -379,8 +522,18 @@ internal sealed class TrayAppContext : ApplicationContext
     private void UpdateMenuFromCache()
     {
         var st = StateStore.Load();
-        _icon.Text = ClampTooltip("Surface Charging: " + LabelFor(st.Mode, st.Duration));
 
+        // Tooltip: variant B has no persistent "current mode" — show a
+        // simple label. Variant A and Unknown keep the v1.2.x format.
+        if (_currentVariant == SurfaceUiVariant.B)
+            _icon.Text = ClampTooltip("Surface Charging");
+        else
+            _icon.Text = ClampTooltip("Surface Charging: " + LabelFor(st.Mode, st.Duration));
+
+        // Variant A mode-item check marks. Updating these for variant B
+        // is a harmless no-op (the items are Visible=false) but kept
+        // unconditional to keep the code path identical when the variant
+        // flips mid-session.
         _miAdaptive.Checked = st.Mode == "adaptive";
         _mi80.Checked       = st.Mode == "80";
         _mi100Day.Checked   = st.Mode == "100" && st.Duration == "1day";
@@ -513,6 +666,11 @@ internal sealed class TrayAppContext : ApplicationContext
             form.Saved = () =>
             {
                 _settings = SettingsModel.Load();
+                // Re-shape the menu in case the dialog's "Re-detect device"
+                // button (Phase 4) flipped DetectedVariant on disk. ApplyHotkeys
+                // also runs because variant-B hotkey rows differ from variant-A.
+                ApplyVariantToMenu();
+                UpdateMenuFromCache();   // refresh tooltip for the new variant
                 ApplyHotkeys();
                 UpdateScheduleMenuLabel();
                 _icon.ShowBalloonTip(2000, "Surface charging tray", "Settings updated.", ToolTipIcon.Info);
@@ -605,6 +763,15 @@ internal sealed class TrayAppContext : ApplicationContext
     private void CycleMode()
     {
         if (_busy) return;
+        // Variant B has only one action — "cycling" semantically reduces
+        // to "trigger the one-shot." This way users who had the Cycle
+        // hotkey bound from v1.2.x continue to get useful behavior after
+        // we detect they're on variant B.
+        if (_currentVariant == SurfaceUiVariant.B)
+        {
+            StartTriggerOneShot();
+            return;
+        }
         var st = StateStore.Load();
         if (st.Mode == "adaptive")           StartSetMode("80");
         else if (st.Mode == "80")            StartSetMode("100", "1day");
