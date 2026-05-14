@@ -5,6 +5,82 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.3.0 — 2026-05-14
+
+Auto-detects two distinct Surface app UI shapes and shapes the entire
+feature surface around what the device actually supports. Fully backward-
+compatible with v1.2.x — existing users upgrading on a three-radio
+Surface (Pro 9/10/11/12, Laptop 5/6/7 etc.) see no UX change.
+
+### Two-variant device support
+
+Surface devices ship the Battery & charging card in one of two shapes:
+
+- **Variant A** — the three-radio classic targeted in v1.0–v1.2:
+  Adaptive / Charge to 80% / Charge to 100%, plus a contextual one-shot
+  "Charge to 100%" override button when 80% is selected.
+- **Variant B** — a single one-shot "Charge to 100%" override button.
+  No radios, no mode concept; the device manages Smart Charging implicitly,
+  and the user's only available action is "override to 100% for this
+  charge cycle." Observed on older Surfaces and on certain Surface app
+  builds where Smart Charging is paused/limited.
+
+v1.3.0 classifies the device structurally on first interaction (no new
+multilingual strings — only the card title remains a translated lookup;
+the inside of the card is detected by structure: three radios = A, one
+invokable button = B). Result is cached to `settings.ini` alongside the
+detection logic's app version.
+
+### Variant B path (new)
+
+For variant B users, the entire app reshapes:
+
+- **Tray menu**: shows only "Charge to 100%" + Schedule + Power mode +
+  housekeeping. The four variant-A mode items are hidden.
+- **Settings dialog**: variant-aware info banner at top of Hotkeys tab
+  + new "Re-detect device" button. Hotkey rows show only the one-shot
+  action; variant-A mode rows are hidden.
+- **Hotkeys**: new `oneshot` slot with default Ctrl+Shift+1. Variant
+  filter prevents collisions with variant-A defaults at registration time.
+- **Scheduler**: same simulated-sleep engine variant A uses, but the
+  scheduled action is a single "Trigger Charge to 100%" instead of a
+  mode flip. Time picker, after-fire radios, and toggle hotkey all
+  unchanged.
+- **RefreshState**: skips the variant-A radio walk for variant B
+  devices, so the misleading "no radio appears selected" error no
+  longer fires.
+
+### Diagnostic tool
+
+- Diagnostic output now includes a `Detected variant: A | B | Unknown`
+  line alongside the existing card detection report. Future bug reports
+  surface variant classification at a glance.
+
+### Compatibility
+
+- Existing v1.2.x users on variant A devices: zero UX change. First
+  refresh after upgrade detects + caches A; all menus, hotkeys, and
+  scheduler behavior identical to v1.2.2.
+- Existing settings.ini files are forward-compatible. New fields
+  (`detected_variant`, `detected_at_app_version`, `oneshot_button_*`)
+  appear on first refresh; v1.2.x cache entries are preserved unchanged.
+- Same OS / device requirements as v1.2.2. .NET 8 Desktop Runtime required.
+
+### Internal
+
+- `FakeSleepMode.Enter` generalized from `(scheduledMode, scheduledDuration)`
+  kwargs to a polymorphic `ScheduledAction` (with `SetModeAction` and
+  `TriggerOneShotAction` subtypes). Variant-A kwargs path preserved as
+  a back-compat shim.
+- `SurfaceController.TriggerOneShot` mirrors `SetMode`'s plumbing
+  (acquire / bind / lookup / cache-poison-retry / cleanup) but ends in
+  `InvokePattern.Invoke()` on the cached variant-B button. Guards
+  against clicking a disabled button with a clear error.
+- Diagnostic tool gains its DetectVariant call via the existing
+  compile-include of UiaCache; no namespace work needed.
+
+---
+
 ## v1.2.2 — 2026-05-12
 
 Diagnostic tool + better error-state guidance for users hitting "card not
