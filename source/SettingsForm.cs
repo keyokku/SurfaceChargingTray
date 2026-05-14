@@ -399,21 +399,40 @@ internal class SettingsForm : Form
         fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
         fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
-        // Mode row
+        // Mode row — variant-aware. Variant A: dropdown of all four
+        // choices ((none) / Adaptive / 80% / 100%). Variant B: dropdown
+        // is locked to a single 'Charge to 100% (one-shot override)'
+        // entry, since the device only exposes that one action. Either
+        // way the control is the same _scheduleMode ComboBox so the
+        // existing save/load plumbing keeps working without forking.
         fireGrid.Controls.Add(MakeFieldLabel("Charging mode:"), 0, 0);
         _scheduleMode = new ComboBox
         {
             DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 200, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6)
+            Width = 220, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6)
         };
-        _scheduleMode.Items.AddRange(new object[]
+        if (_variant == SurfaceUiVariant.B)
         {
-            "(none)", "Adaptive", "Limit to 80%", "Charge to 100%"
-        });
+            _scheduleMode.Items.AddRange(new object[]
+            {
+                "(none)", "Charge to 100% (one-shot)"
+            });
+        }
+        else
+        {
+            _scheduleMode.Items.AddRange(new object[]
+            {
+                "(none)", "Adaptive", "Limit to 80%", "Charge to 100%"
+            });
+        }
         _scheduleMode.SelectedIndexChanged += (_, _) => UpdateDurationVisibility();
         fireGrid.Controls.Add(_scheduleMode, 1, 0);
 
-        // Duration label + dropdown (only visible when mode == 100%)
+        // Duration label + dropdown (variant A only — variant B's one-shot
+        // doesn't have a duration concept; the button is fire-and-forget
+        // for a single charge cycle). Created in both variants to keep
+        // the field references non-null for theming + visibility toggling,
+        // but Visible=false on B.
         _scheduleDurationLabel = MakeFieldLabel("Duration:");
         fireGrid.Controls.Add(_scheduleDurationLabel, 2, 0);
         _scheduleDuration = new ComboBox
@@ -546,12 +565,22 @@ internal class SettingsForm : Form
         tab.Controls.Add(scroll);
 
         // ---- Populate from model ----
-        switch (_model.ScheduleMode)
+        // Variant B has its own two-entry dropdown: index 0 = "(none)",
+        // index 1 = "oneshot". Variant A keeps the v1.2.x four-entry
+        // mapping ((none) / Adaptive / 80% / 100%).
+        if (_variant == SurfaceUiVariant.B)
         {
-            case "adaptive": _scheduleMode.SelectedIndex = 1; break;
-            case "80":       _scheduleMode.SelectedIndex = 2; break;
-            case "100":      _scheduleMode.SelectedIndex = 3; break;
-            default:         _scheduleMode.SelectedIndex = 0; break;
+            _scheduleMode.SelectedIndex = _model.ScheduleMode == "oneshot" ? 1 : 0;
+        }
+        else
+        {
+            switch (_model.ScheduleMode)
+            {
+                case "adaptive": _scheduleMode.SelectedIndex = 1; break;
+                case "80":       _scheduleMode.SelectedIndex = 2; break;
+                case "100":      _scheduleMode.SelectedIndex = 3; break;
+                default:         _scheduleMode.SelectedIndex = 0; break;
+            }
         }
         _scheduleDuration.SelectedIndex = _model.ScheduleDuration == "1week" ? 1 : 0;
 
@@ -576,7 +605,11 @@ internal class SettingsForm : Form
 
     private void UpdateDurationVisibility()
     {
-        bool is100 = _scheduleMode.SelectedIndex == 3;
+        // Duration is variant-A-only: the 1-day vs 1-week distinction lives
+        // in the Surface app's radio UI alongside the 100% mode. Variant B
+        // has no equivalent concept (one-shot is fire-and-forget for one
+        // charge cycle), so the duration row is always hidden there.
+        bool is100 = _variant == SurfaceUiVariant.A && _scheduleMode.SelectedIndex == 3;
         _scheduleDurationLabel.Visible = is100;
         _scheduleDuration.Visible      = is100;
     }
@@ -757,19 +790,30 @@ internal class SettingsForm : Form
             }
         }
 
-        // Schedule fields
-        switch (_scheduleMode.SelectedIndex)
+        // Schedule fields — variant-aware. Variant B's dropdown has only
+        // two entries ((none) / oneshot); we serialize that as
+        // ScheduleMode='oneshot' (no Duration). Variant A keeps the
+        // v1.2.x mapping.
+        if (_variant == SurfaceUiVariant.B)
         {
-            case 1: _model.ScheduleMode = "adaptive"; _model.ScheduleDuration = null; break;
-            case 2: _model.ScheduleMode = "80";       _model.ScheduleDuration = null; break;
-            case 3:
-                _model.ScheduleMode = "100";
-                _model.ScheduleDuration = _scheduleDuration.SelectedIndex == 1 ? "1week" : "1day";
-                break;
-            default:
-                _model.ScheduleMode = null;
-                _model.ScheduleDuration = null;
-                break;
+            _model.ScheduleMode     = _scheduleMode.SelectedIndex == 1 ? "oneshot" : null;
+            _model.ScheduleDuration = null;
+        }
+        else
+        {
+            switch (_scheduleMode.SelectedIndex)
+            {
+                case 1: _model.ScheduleMode = "adaptive"; _model.ScheduleDuration = null; break;
+                case 2: _model.ScheduleMode = "80";       _model.ScheduleDuration = null; break;
+                case 3:
+                    _model.ScheduleMode = "100";
+                    _model.ScheduleDuration = _scheduleDuration.SelectedIndex == 1 ? "1week" : "1day";
+                    break;
+                default:
+                    _model.ScheduleMode = null;
+                    _model.ScheduleDuration = null;
+                    break;
+            }
         }
         _model.ScheduleTime     = timeText;
         _model.ScheduleAutoExit = _autoExitYes.Checked;
