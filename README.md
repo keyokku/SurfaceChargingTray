@@ -5,8 +5,9 @@ Older version visuals (will update later):
 https://github.com/user-attachments/assets/5aef04e3-2bf7-4bb8-b287-0b3265136ce2
 
 <p align="center">
-  <img width="520" alt="Surface Charging Tray screenshot" src="https://github.com/user-attachments/assets/bca4bf0c-df3b-48cf-90fc-46c85c68c4a0" />
+  <img width="600" height="703" alt="image" src="https://github.com/user-attachments/assets/e5261918-5ffc-4e40-a5ea-ad12815427c4" />
 </p>
+
 
 A small Windows system-tray utility that switches the Microsoft Surface app's
 **charging mode** (Adaptive / Limit to 80% / Charge to 100% temporarily) — and
