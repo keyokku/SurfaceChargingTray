@@ -1,8 +1,6 @@
 # Surface Charging Tray
 
-Older version visuals (will update later):
-
-https://github.com/user-attachments/assets/5aef04e3-2bf7-4bb8-b287-0b3265136ce2
+<video src="https://github.com/keyokku/SurfaceChargingTray/releases/download/v1.2.2/SurfaceChargingTrayv122demo.mp4" controls width="720"></video>
 
 <p align="center">
   <img width="600" alt="image" src="https://github.com/user-attachments/assets/e5261918-5ffc-4e40-a5ea-ad12815427c4" />
