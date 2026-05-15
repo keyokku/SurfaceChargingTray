@@ -25,7 +25,7 @@ built-in scheduler so you can have charging mode flip overnight on its own.
 > instead, your device's Surface app uses an older UI variant that this tool
 > can't drive yet (planned for v1.3.0).
 >
-> **Likely working:** Surface Pro 8 onward · Surface Laptop 5 onward ·
+> **Likely working:** Surface Pro 9 onward · Surface Laptop 5 onward ·
 > Surface Laptop Studio 2 onward. But check your app for the 3 mode switcher.
 >
 > **Not yet supported:** Surface Laptop Studio 1 · Surface Pro 7
@@ -89,7 +89,7 @@ Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8
 
 **Possibly supported devices** — modern Surfaces whose Surface app may expose the three-mode *Battery & charging* UI (Adaptive / Limit to 80% / Charge to 100%):
 
-- Surface Pro 8, 9, 10, 11, 12
+- Surface Pro 9, 10, 11, 12
 - Surface Laptop 5, 6, 7 (Intel and Snapdragon)
 - Surface Laptop Studio 2
 - Surface Laptop Go 2, 3
