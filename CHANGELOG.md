@@ -5,7 +5,7 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
-## v1.3.0 — 2026-05-14
+## v1.3.0 — 2026-05-16
 
 Auto-detects two distinct Surface app UI shapes and shapes the entire
 feature surface around what the device actually supports. Fully backward-
