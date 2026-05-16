@@ -296,6 +296,77 @@ internal static class SurfaceController
     }
 
     /// <summary>
+    /// Variant B only: probes the Surface app's "Charge to 100%" override
+    /// button and returns its current IsEnabled state. Returns:
+    ///   true  = button is enabled (Smart Charging is currently limiting,
+    ///           override is available)
+    ///   false = button is disabled (Smart Charging not limiting, OR
+    ///           override was already triggered this charge cycle)
+    ///   null  = could not determine (Surface app couldn't be acquired,
+    ///           card or button not found, UIA error)
+    ///
+    /// Same plumbing as <see cref="TriggerOneShot"/> but stops at the
+    /// IsEnabled read — never invokes the button. Used by
+    /// <see cref="OneShotStateWatcher"/> to keep the variant B tray menu
+    /// item's enabled state synchronized with the Surface app's reality
+    /// without polling the app on a timer (the watcher schedules these
+    /// probes only at meaningful battery / power transitions).
+    /// </summary>
+    public static bool? ProbeOneShotEnabled()
+    {
+        Process? proc = null;
+        bool launchedByUs = false;
+        try
+        {
+            (proc, launchedByUs) = AcquireSurfaceWindow();
+
+            var localProc = proc;
+            var win = WaitFor(() =>
+                {
+                    try { return AutomationElement.FromHandle(localProc.MainWindowHandle); }
+                    catch { return null; }
+                }, 5000);
+            if (win == null) return null;
+
+            var settings = Settings ?? SettingsModel.Load();
+            var bcGroup = LookupBatteryCard(win, settings);
+            if (bcGroup == null) return null;
+
+            ExpandIfCollapsed(bcGroup);
+
+            var btn = UiaCache.FindOneShotButton(bcGroup, settings);
+            if (btn == null) return null;
+
+            bool enabled;
+            try
+            {
+                enabled = (bool)btn.GetCurrentPropertyValue(AutomationElement.IsEnabledProperty);
+            }
+            catch { return null; }
+
+            Thread.Sleep(150);   // brief settle before close
+            CloseProc(proc);
+            proc = null;
+            return enabled;
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ERR ] ProbeOneShotEnabled: {ex.GetType().Name}: {ex.Message}");
+            if (launchedByUs && proc != null)
+            {
+                TryCloseQuiet(proc);
+                proc = null;
+            }
+            return null;
+        }
+        finally
+        {
+            proc?.Dispose();
+            try { SetThreadExecutionState(ES_CONTINUOUS); } catch { }
+        }
+    }
+
+    /// <summary>
     /// Reads the current mode from the Surface app and updates the cache.
     /// Retries once on transient failures.
     /// </summary>

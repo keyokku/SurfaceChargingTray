@@ -66,6 +66,14 @@ internal sealed class TrayAppContext : ApplicationContext
     // at construction; updated whenever ApplyVariantToMenu runs.
     private SurfaceUiVariant _currentVariant = SurfaceUiVariant.Unknown;
 
+    // Variant B only. Owns the power/battery state machine that keeps the
+    // _mi100OneShot menu item's enabled-state synchronized with the Surface
+    // app's button without polling. Created in ApplyVariantToMenu when
+    // variant transitions to B; disposed when variant flips away from B
+    // (or app exits). Variant A users incur ZERO instantiation, ZERO
+    // background timers, ZERO power-event subscriptions from this field.
+    private OneShotStateWatcher? _oneShotWatcher;
+
     private readonly ToolStripMenuItem _miAdaptive;
     private readonly ToolStripMenuItem _mi80;
     private readonly ToolStripMenuItem _mi100Day;
@@ -116,7 +124,13 @@ internal sealed class TrayAppContext : ApplicationContext
         _mi80         = new ToolStripMenuItem("Limit to 80%",            (Image?)null, (s, e) => StartSetMode("80"));
         _mi100Day     = new ToolStripMenuItem("Charge to 100% (1 day)",  (Image?)null, (s, e) => StartSetMode("100", "1day"));
         _mi100Week    = new ToolStripMenuItem("Charge to 100% (1 week)", (Image?)null, (s, e) => StartSetMode("100", "1week"));
-        _mi100OneShot = new ToolStripMenuItem("Charge to 100%",          (Image?)null, (s, e) => StartTriggerOneShot());
+        _mi100OneShot = new ToolStripMenuItem("Charge to 100%",          (Image?)null, (s, e) => StartTriggerOneShot())
+        {
+            // Hover tooltip on the menu item itself — only meaningful when
+            // the item is greyed (Disabled state) but harmless when enabled
+            // since most users won't hover an enabled clickable item.
+            ToolTipText = "Already charging to 100% / no smart charge limit currently"
+        };
 
         _miSchedule  = new ToolStripMenuItem("Schedule: (not set)",     (Image?)null, (s, e) => ShowSettings(openOnScheduleTab: true));
 
@@ -153,6 +167,12 @@ internal sealed class TrayAppContext : ApplicationContext
         if (!PowerMode.IsSupported())
             _miPower.Visible = false;
 
+        // Tray menu open: variant B's watcher (if instantiated) takes the
+        // opportunity to refresh the one-shot button state. No-op for
+        // variant A (watcher is null). Cheap when the watcher decides to
+        // skip per its 30s debounce.
+        _menu.Opening += (_, _) => _oneShotWatcher?.OnMenuOpening();
+
         _icon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
@@ -168,13 +188,19 @@ internal sealed class TrayAppContext : ApplicationContext
         UpdateScheduleMenuLabel();
         ApplyHotkeys();
 
-        // Auto-discovery on first launch: if the UIA cache is empty, fire a
-        // background RefreshState. RefreshState's normal-then-discovery flow
-        // expands the Surface app's UI and writes every needed AutomationId
-        // and Name into settings.ini. The very first user click after the
-        // refresh completes hits Layer 1 (cached AutomationId) instead of
-        // doing an expensive Name search across 19 localized variants.
-        if (string.IsNullOrEmpty(_settings.BatteryCardId)) StartRefresh();
+        // Auto-discovery on first launch: fire a background RefreshState if
+        // either (a) the UIA cache is empty (fresh install) or (b) the
+        // variant hasn't been classified yet (v1.2.x -> v1.3.0 upgraders).
+        // RefreshState's normal-then-discovery flow expands the Surface app's
+        // UI, writes every needed AutomationId and Name into settings.ini,
+        // and — new in v1.3.0 — runs DetectVariant so the menu reshapes
+        // itself before the user clicks anything. The DetectedVariant guard
+        // is critical for v1.2.x upgraders on variant B devices: their
+        // BatteryCardId is already cached (v1.2.x's Layer 3 Name match
+        // worked) but they need a fresh detection pass to discover they're
+        // on variant B and reshape the menu accordingly.
+        if (string.IsNullOrEmpty(_settings.BatteryCardId)
+         || string.IsNullOrEmpty(_settings.DetectedVariant)) StartRefresh();
 
         // Watch surface-state.json for external writes — primarily by
         // scheduled-task CLI invocations of our exe. When they update the
@@ -334,9 +360,13 @@ internal sealed class TrayAppContext : ApplicationContext
                 else
                 {
                     ClearError();
-                    // No StateStore mirror for variant B (no persistent mode);
-                    // tooltip reflects the action just performed.
-                    _icon.Text = ClampTooltip("Surface Charging: Charge to 100% triggered");
+                    // Variant B has no StateStore mirror. The watcher fully
+                    // owns the tray tooltip (post-invoke it sets the disabled
+                    // state's tooltip via OnOneShotStateChanged). Microsoft
+                    // greys the button right after invocation, so notifying
+                    // the watcher immediately is reliable — no probe needed
+                    // for this transition.
+                    _oneShotWatcher?.NotifyButtonInvoked();
                 }
                 TrimWorkingSet();
                 ProcessPending();
@@ -386,6 +416,93 @@ internal sealed class TrayAppContext : ApplicationContext
         // schedule section variant-aware). Hidden for Unknown — no
         // actionable target to schedule.
         _miSchedule.Visible = isA || isB;
+
+        // ---- Variant B watcher lifecycle (Phase 8) ----
+        // Created only when transitioning into B; disposed when transitioning
+        // out of B. Variant A users never instantiate it: zero background
+        // timers, zero power-event subscriptions, zero Surface-app probes
+        // from this code path.
+        if (isB && _oneShotWatcher == null)
+        {
+            _oneShotWatcher = new OneShotStateWatcher(_ui, OnOneShotProbeRequested);
+            _oneShotWatcher.StateChanged += OnOneShotStateChanged;
+            _oneShotWatcher.Initialize();   // fire initial state report
+        }
+        else if (!isB && _oneShotWatcher != null)
+        {
+            _oneShotWatcher.StateChanged -= OnOneShotStateChanged;
+            _oneShotWatcher.Dispose();
+            _oneShotWatcher = null;
+            // Restore default menu-item appearance — if we ever flip back
+            // to B later, the watcher rebuilds its state from scratch.
+            _mi100OneShot.Enabled = true;
+            _mi100OneShot.Text    = "Charge to 100%";
+        }
+    }
+
+    /// <summary>
+    /// Called by OneShotStateWatcher when it wants to probe the Surface app's
+    /// one-shot button enabled-state. Serializes against other Surface-app
+    /// interactions via _busy, exactly like StartTriggerOneShot / StartRefresh.
+    /// Result is delivered on the UI thread (the callback is invoked there).
+    /// </summary>
+    private void OnOneShotProbeRequested(Action<bool?> onResult)
+    {
+        if (_busy)
+        {
+            // Don't queue; the watcher will re-trigger on next opportunity
+            // (next battery transition / menu open). Probes are best-effort.
+            onResult(null);
+            return;
+        }
+        _busy = true;
+        Task.Run(() =>
+        {
+            bool? r = SurfaceController.ProbeOneShotEnabled();
+            _ui.Post(_ =>
+            {
+                _busy = false;
+                TrimWorkingSet();
+                ProcessPending();
+                try { onResult(r); } catch { }
+            }, null);
+        });
+    }
+
+    /// <summary>
+    /// Called on the UI thread when the watcher's reported state changes.
+    /// Updates the variant B menu item's enabled state, label, and the
+    /// tray tooltip.
+    /// </summary>
+    private void OnOneShotStateChanged(OneShotStateWatcher.ButtonState s)
+    {
+        // Menu item text never changes — only the Enabled (greyed) state.
+        // Standard Windows UX: disabled items aren't relabeled. The hover
+        // tooltip on the menu item (set at construction) explains why.
+        // Tray icon hover tooltip carries the at-a-glance state.
+        _mi100OneShot.Text = "Charge to 100%";
+        switch (s)
+        {
+            case OneShotStateWatcher.ButtonState.Enabled:
+                // Smart Charging is actively limiting (typically holding at 80%).
+                _mi100OneShot.Enabled = true;
+                _icon.Text = ClampTooltip("Surface Charging: Smart");
+                break;
+            case OneShotStateWatcher.ButtonState.Disabled:
+                // Either override already triggered (going to 100%) or Smart
+                // Charging not limiting (also going to 100%). Either way the
+                // device is on the path to 100%.
+                _mi100OneShot.Enabled = false;
+                _icon.Text = ClampTooltip("Surface Charging: To 100%");
+                break;
+            case OneShotStateWatcher.ButtonState.Unknown:
+                // Initial / indeterminate state. Render as clickable; if the
+                // user clicks, TriggerOneShot's IsEnabled guard will surface
+                // a clean error if it turns out the button is disabled.
+                _mi100OneShot.Enabled = true;
+                _icon.Text = ClampTooltip("Surface Charging");
+                break;
+        }
     }
 
     private void StartRefresh()
@@ -798,6 +915,17 @@ internal sealed class TrayAppContext : ApplicationContext
             _trimTimer.Stop();
             _trimTimer.Dispose();
             _hotkeys.Dispose();
+            // Variant B watcher (null for variant A users — no-op).
+            // Unsubscribe StateChanged first for symmetry with the
+            // ApplyVariantToMenu transition path; not strictly required
+            // since both the watcher and TrayAppContext are dying, but
+            // keeps the cleanup pattern consistent.
+            if (_oneShotWatcher != null)
+            {
+                _oneShotWatcher.StateChanged -= OnOneShotStateChanged;
+                _oneShotWatcher.Dispose();
+                _oneShotWatcher = null;
+            }
             if (_stateWatcher != null)
             {
                 _stateWatcher.EnableRaisingEvents = false;
