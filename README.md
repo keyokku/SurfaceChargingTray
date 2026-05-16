@@ -1,5 +1,7 @@
 # Surface Charging Tray
 
+## Major Update: v1.3.0 is out which includes potential support for older or most Surface devices with the Surface app and any charging options (3 mode / 1 button). Check it out!
+
 <video src="https://github.com/keyokku/SurfaceChargingTray/releases/download/v1.2.2/SurfaceChargingTrayv122demo.mp4" controls width="720"></video>
 
 <p align="center">
