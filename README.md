@@ -84,18 +84,22 @@ Requires [.NET 8 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/8
 - **No admin rights** required
 - Scheduler **requires the device to be plugged in**
 
-**Tested on:** Surface Pro 12 (Snapdragon ARM64).
+**Tested on:** Surface Pro 12 (Snapdragon ARM64). Variant B path has limited real-hardware coverage so far — reports welcome.
 
-**Possibly supported devices** — modern Surfaces whose Surface app may expose the three-mode *Battery & charging* UI (Adaptive / Limit to 80% / Charge to 100%):
+**Likely supported devices** — v1.3.0+ auto-detects which UI variant your Surface app exposes and adjusts itself. Two paths covered:
 
+*Three-mode UI (variant A) — full feature set:*
 - Surface Pro 9, 10, 11, 12
 - Surface Laptop 5, 6, 7 (Intel and Snapdragon)
 - Surface Laptop Studio 2
 - Surface Laptop Go 2, 3
 
-Microsoft does not talk about the Surface app and device models so we do not have definitive lists. If your model isn't listed but you see all three modes in **Surface app → Battery & charging**, the tool should work — open an issue if it doesn't.
+*Single-button override UI (variant B) — *Charge to 100%* override only:*
+- Surface Laptop Studio 1
+- Surface Pro 7 and similar older devices
+- Some newer devices where Smart Charging is in a paused / limited state — the Surface app appears to ship the single-button UI in those cases too
 
-Older Surfaces with a single-button "Charge to 100%" override only (e.g. Surface Laptop Studio 1, Surface Pro 7) — see the [v1.3.0-beta1 preview](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.0-beta1).
+Microsoft doesn't publish a definitive map of Surface models to UI variants, and which UI you see can depend on your Surface app version, firmware state, and Smart Charging mode — so the lists above are educated guesses, not guarantees. The tool will tell you what it detected on first launch; if your model isn't listed but it works, great. If the detection misfires or you hit something we haven't accounted for, the diagnostic tool captures what's on your screen — open an issue with the report attached.
 
 ## Under the hood
 
