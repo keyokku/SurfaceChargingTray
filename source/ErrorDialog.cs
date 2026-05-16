@@ -50,8 +50,14 @@ internal static class ErrorDialog
             Font = new Font("Segoe UI", 9.5f),
             AutoScaleMode = AutoScaleMode.Dpi,
             AutoScaleDimensions = new SizeF(96f, 96f),
-            ClientSize = showDiagnosticHelp ? new Size(560, 360) : new Size(520, 200),
-            MinimumSize = showDiagnosticHelp ? new Size(500, 320) : new Size(420, 180)
+            // Non-detection errors get a roomier dialog in v1.3.0+: variant B's
+            // 'Charge to 100% is currently disabled — Smart Charging isn't
+            // limiting right now, or the override was already triggered this
+            // cycle' is the first error long enough to clip the previous 520x200
+            // window. 580x260 fits up to ~5 wrapped lines comfortably with
+            // breathing room.
+            ClientSize = showDiagnosticHelp ? new Size(560, 360) : new Size(580, 260),
+            MinimumSize = showDiagnosticHelp ? new Size(500, 320) : new Size(480, 220)
         };
 
         var btnRow = new FlowLayoutPanel
@@ -77,7 +83,7 @@ internal static class ErrorDialog
         {
             Text = errorMessage,
             AutoSize = true,
-            MaximumSize = new Size(500, 0),
+            MaximumSize = new Size(540, 0),
             ForeColor = Color.FromArgb(0xB0, 0x2A, 0x2A),
             Margin = new Padding(0, 0, 0, 12)
         });
@@ -92,7 +98,7 @@ internal static class ErrorDialog
                      + "this tool expects. The diagnostic tool captures your Surface app's "
                      + "structure so I can support your model in a future update.",
                 AutoSize = true,
-                MaximumSize = new Size(500, 0),
+                MaximumSize = new Size(540, 0),
                 Margin = new Padding(0, 0, 0, 12)
             });
 
@@ -111,7 +117,7 @@ internal static class ErrorDialog
                      + "  3. Click 'Run Test' in the diagnostic dialog.\n"
                      + "  4. Post the .txt + .png it produces on the GitHub thread.",
                 AutoSize = true,
-                MaximumSize = new Size(500, 0),
+                MaximumSize = new Size(540, 0),
                 Margin = new Padding(0, 0, 0, 12)
             });
 
