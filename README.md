@@ -19,7 +19,7 @@ built-in scheduler so you can have charging mode flip overnight on its own.
 
 > **⚠️ Will this work on my Surface?**
 >
-> v1.3.0+ auto-detects whether your Surface app shows the **three-mode** UI
+> First, you must have a functional Surface app for this tray tool to work. v1.3.0+ auto-detects whether your Surface app shows the **three-mode** UI
 > (Adaptive / Limit to 80% / Charge to 100%) or the **single-button**
 > *Charge to 100%* override UI, and reshapes the tray menu, hotkeys, and
 > scheduler around what your device actually supports.
