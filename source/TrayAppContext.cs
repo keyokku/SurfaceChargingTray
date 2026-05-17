@@ -173,6 +173,12 @@ internal sealed class TrayAppContext : ApplicationContext
         // skip per its 30s debounce.
         _menu.Opening += (_, _) => _oneShotWatcher?.OnMenuOpening();
 
+        // Fake-sleep safety watchdog (Phase 9): force-exit fires here with
+        // a reason. Surface it as a balloon so the user knows simulated
+        // sleep ended unexpectedly — and why. Variant-agnostic (both A and
+        // B use the scheduler that runs through fake-sleep).
+        FakeSleepMode.WatchdogExited += OnFakeSleepWatchdogExited;
+
         _icon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
@@ -474,6 +480,30 @@ internal sealed class TrayAppContext : ApplicationContext
     /// Updates the variant B menu item's enabled state, label, and the
     /// tray tooltip.
     /// </summary>
+    /// <summary>
+    /// Fires (on UI thread) when FakeSleepMode's safety watchdog force-exits.
+    /// Surface the reason to the user via a balloon notification so they know
+    /// simulated sleep ended unexpectedly AND why. Also stamp the error log
+    /// so the reason is preserved for diagnostics if the balloon is missed.
+    /// </summary>
+    private void OnFakeSleepWatchdogExited(string reason)
+    {
+        try
+        {
+            ClearError();
+            _icon.ShowBalloonTip(
+                10_000,
+                "Simulated sleep ended",
+                reason.Length > 250 ? reason[..250] : reason,
+                ToolTipIcon.Warning);
+            _icon.Text = ClampTooltip("Surface Charging — simulated sleep exited (see log)");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ERR ] TrayAppContext: OnFakeSleepWatchdogExited balloon: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     private void OnOneShotStateChanged(OneShotStateWatcher.ButtonState s)
     {
         // Menu item text never changes — only the Enabled (greyed) state.
@@ -926,6 +956,10 @@ internal sealed class TrayAppContext : ApplicationContext
                 _oneShotWatcher.Dispose();
                 _oneShotWatcher = null;
             }
+            // Fake-sleep watchdog event (Phase 9). Static event so we MUST
+            // unsubscribe explicitly or we leak this TrayAppContext through
+            // the FakeSleepMode static.
+            try { FakeSleepMode.WatchdogExited -= OnFakeSleepWatchdogExited; } catch { }
             if (_stateWatcher != null)
             {
                 _stateWatcher.EnableRaisingEvents = false;

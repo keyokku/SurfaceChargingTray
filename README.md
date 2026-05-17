@@ -57,7 +57,8 @@ All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **[v1.3.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.0)** *(latest)* | 2026-05-16 | Auto-detects two Surface app UI variants and reshapes the tray menu / hotkeys / scheduler around whichever your device supports. **Three-mode UI** users (most modern Surfaces) get the same experience as v1.2.2. **Single-button override UI** users (older Surfaces) now get a working *Charge to 100%* override action with live state tracking. Backward-compatible with v1.2.x settings. |
+| **[v1.3.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.1)** *(latest)* | 2026-05-17 | Safety + polish release on top of v1.3.0. Adds **fake-sleep watchdogs** (AC-health, AC-disconnect, low-battery floor, duration cap) to bound damage from rare USB-C PD failures during overnight scheduled charging-mode flips. Thorough **dark-mode pass** on the Settings dialog: TabControl chrome, ComboBox dropdown arrows + dropdown-list scrollbars, scrollable panels, CheckBox/RadioButton glyphs. "Hotkeys" tab renamed to **General**. No functional regressions vs v1.3.0. |
+| **[v1.3.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.0)** | 2026-05-16 | Auto-detects two Surface app UI variants and reshapes the tray menu / hotkeys / scheduler around whichever your device supports. **Three-mode UI** users (most modern Surfaces) get the same experience as v1.2.2. **Single-button override UI** users (older Surfaces) now get a working *Charge to 100%* override action with live state tracking. Backward-compatible with v1.2.x settings. |
 | **[v1.2.2](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.2)** | 2026-05-12 | Charging-mode scheduler. Press a hotkey before bed; the device enters simulated sleep to change charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler) below. **Adds a separate diagnostic tool download for users whose Surface model isn't detected, plus better error dialog that links. No AHK package — `.exe` builds only.** |
 | **[v1.1.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.1)** | 2026-05-10 | Multi-language UIA Name lookup so non-English Surface app installs find the Battery & charging card. `.exe` build also adds first-launch auto-discovery + AutomationId caching, self-healing on schema changes, and a coalescing queue for rapid mode switches. AHK package gets the multi-language fix only. |
 | **[v1.1.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.1.0)** | 2026-05-10 | Windows Power mode submenu (3 modes) + 3 Power-mode hotkey slots, persistent rotating logs, memory-leak fixes for long-running trays. AHK package gets the same Power-mode features. |
@@ -71,8 +72,8 @@ Latest release on the [Releases](../../releases) tab. Two packages:
 
 | Package | For |
 |---|---|
-| `SurfaceChargingTray-v1.3.0-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
-| `SurfaceChargingTray-v1.3.0-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
+| `SurfaceChargingTray-v1.3.1-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
+| `SurfaceChargingTray-v1.3.1-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
 
 Find your CPU at **Settings → System → About → System type**. Unzip, double-click `SurfaceChargingTray.exe`. No install, no admin.
 

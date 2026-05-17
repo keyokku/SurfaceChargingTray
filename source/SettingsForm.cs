@@ -84,7 +84,19 @@ internal class SettingsForm : Form
         HandleCreated += (_, _) => DarkMode.ApplyToForm(this);
         Shown += (_, _) =>
         {
+            // Force handle creation on EVERY TabPage so non-active tabs'
+            // children have valid HWNDs when ApplyTheme runs — without this,
+            // SetWindowTheme silently skips the inactive tab's controls and
+            // their native scrollbars stay light until the user clicks the
+            // tab (and even then often don't re-apply). Reading .Handle on
+            // a TabPage creates the page and all its children. Cheap,
+            // happens once.
+            foreach (TabPage tp in _tabs.TabPages) { var _ = tp.Handle; }
             ApplyTheme();
+            // Belt-and-suspenders: re-apply theme when the user switches
+            // tabs. Some uxtheme transitions get lost on first paint of a
+            // tab that was previously hidden.
+            _tabs.SelectedIndexChanged += (_, _) => ApplyTheme();
             if (_openOnScheduleTab) _tabs.SelectedTab = _tabSchedule;
             // Re-apply status color after theme settles — DarkMode.IsAppsDarkMode
             // resolves correctly here, and the user's saved state may also need
@@ -173,13 +185,21 @@ internal class SettingsForm : Form
         linksRow.Controls.Add(githubLink);
         footer.Controls.Add(linksRow);
 
-        // ----- Middle: TabControl with Hotkeys + Schedule tabs ---------
-        _tabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 8) };
-        var tabHotkeys  = new TabPage("Hotkeys")  { Padding = new Padding(16) };
+        // ----- Middle: TabControl with General + Schedule tabs ----------
+        // 'General' (was 'Hotkeys' through v1.3.0) holds run-at-login, the
+        // variant banner with Re-detect, and the hotkey grid. Renamed in
+        // v1.3.1 to reflect that it has more than just hotkeys now.
+        // Use DarkTabControl (which subclasses TabControl) so the entire
+        // tab strip area paints dark via owner-draw + WndProc, instead of
+        // fighting native chrome via Paint-event overlays.
+        _tabs = DarkMode.IsAppsDarkMode()
+            ? new DarkTabControl { Dock = DockStyle.Fill, Padding = new Point(14, 8) }
+            : new TabControl    { Dock = DockStyle.Fill, Padding = new Point(14, 8) };
+        var tabGeneral  = new TabPage("General")  { Padding = new Padding(16) };
         _tabSchedule    = new TabPage("Schedule") { Padding = new Padding(16) };
-        BuildHotkeysTab(tabHotkeys);
+        BuildHotkeysTab(tabGeneral);
         BuildScheduleTab(_tabSchedule);
-        _tabs.TabPages.Add(tabHotkeys);
+        _tabs.TabPages.Add(tabGeneral);
         _tabs.TabPages.Add(_tabSchedule);
 
         // Order matters: docked controls added BEFORE the Fill control so
@@ -222,7 +242,9 @@ internal class SettingsForm : Form
         };
         _btnRedetect = new Button
         {
-            Text = "Re-detect device", Size = new Size(170, 32),
+            // 40px tall (was 32) — DPI scaling on high-DPI Surface displays
+            // was clipping the text descender of 'Re-detect device' at 32px.
+            Text = "Re-detect device", Size = new Size(170, 40),
             Margin = new Padding(0, 4, 0, 0)
         };
         _btnRedetect.Click += (_, _) => RunRedetect();
@@ -940,11 +962,16 @@ internal class SettingsForm : Form
                     cb.ForeColor = fg;
                     cb.BackColor = bg;
                     cb.FlatStyle = FlatStyle.Standard;
+                    // Native dark theme for the check box glyph itself.
+                    // Without this the small square sits as light system
+                    // chrome inside the otherwise-dark control.
+                    DarkMode.ApplyDarkExplorerTheme(cb);
                     break;
                 case RadioButton rb:
                     rb.ForeColor = fg;
                     rb.BackColor = bg;
                     rb.FlatStyle = FlatStyle.Standard;
+                    DarkMode.ApplyDarkExplorerTheme(rb);
                     break;
                 case Button btn:
                     btn.ForeColor = fg;
@@ -955,17 +982,36 @@ internal class SettingsForm : Form
                 case ComboBox combo:
                     combo.ForeColor = fg;
                     combo.BackColor = Color.FromArgb(0x2B, 0x2B, 0x2B);
-                    combo.FlatStyle = FlatStyle.Flat;
+                    // NOTE: DO NOT set FlatStyle = Flat here. FlatStyle.Flat
+                    // makes WinForms paint the combo's chrome itself, which
+                    // OVERRIDES the native DarkMode_CFD theme — the dropdown
+                    // arrow stays system-light. Standard FlatStyle + native
+                    // dark theme gives a fully dark control including the
+                    // arrow button.
+                    combo.FlatStyle = FlatStyle.Standard;
+                    DarkMode.ApplyDarkComboBoxTheme(combo);
+                    DarkMode.HookComboBoxDropdownDarkTheme(combo);
                     break;
                 case TextBox tb:
                     tb.ForeColor = fg;
                     tb.BackColor = Color.FromArgb(0x2B, 0x2B, 0x2B);
                     tb.BorderStyle = BorderStyle.FixedSingle;
                     break;
+                case DarkTabControl dtc:
+                    // Subclass handles its own painting via WndProc — just
+                    // propagate the current scheme colors in case ApplyTheme
+                    // is called again with different values.
+                    dtc.DarkBackground     = bg;
+                    dtc.DarkTabFg          = fg;
+                    dtc.DarkTabSelectedBg  = btnBg;
+                    dtc.DarkBorder         = border;
+                    dtc.Invalidate();
+                    break;
                 case TabControl tc:
-                    // TabControl itself is owner-drawn by Windows; we tint
-                    // its tab strip background by setting BackColor on the
-                    // TabPage contents below. Leave TabControl as is.
+                    // Fallback: plain TabControl (used only when dark mode
+                    // is off at construction time). Leave as-is.
+                    tc.BackColor = bg;
+                    tc.ForeColor = fg;
                     break;
                 case TabPage tp:
                     tp.BackColor = bg;
@@ -976,9 +1022,14 @@ internal class SettingsForm : Form
                 case Panel _:
                     c.BackColor = bg;
                     c.ForeColor = fg;
+                    // If this panel scrolls (AutoScroll = true), native dark
+                    // theme makes its scrollbars dark too. Safe to call on
+                    // non-scrolling panels — no visual effect.
+                    DarkMode.ApplyDarkExplorerTheme(c);
                     break;
             }
             Recolor(c, bg, fg, grayFg, btnBg, border);
         }
     }
+
 }

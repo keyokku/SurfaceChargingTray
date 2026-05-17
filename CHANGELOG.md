@@ -5,6 +5,88 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.3.1 — 2026-05-17
+
+Safety + polish release on top of v1.3.0. No functional regressions; same
+variant-detection and scheduler behavior as v1.3.0, with hardening against
+a specific overnight-drain failure mode + a thorough dark-mode pass on
+the Settings dialog.
+
+### Fake-sleep safety watchdogs
+
+After an incident where USB-C Power Delivery silently failed mid-night on
+a Surface Pro 12 — adapter stopped delivering power while Windows still
+reported "AC plugged in" — the device drained overnight to a hard
+shutdown. v1.3.1 adds four guards that run on a single 60-second timer
+*only* while simulated sleep is active. They can't prevent the underlying
+firmware/PD failure (Windows/Surface side, we're a user-mode app) but
+they bound the damage: any sustained "supposedly plugged in but battery
+dropping" condition force-exits simulated sleep within minutes, letting
+Windows enter real Modern Standby which often resets the stuck PD state.
+
+- **AC-health watchdog** — battery dropping ≥3% over 10 min with 3+
+  consistent samples while `PowerLineStatus.Online` → force-exit.
+  Tiered: only active below 80% battery, because Smart-Charging-set-to-80%
+  will legitimately drain a 100%-battery down to the 80% cap and we don't
+  want to false-flag normal firmware behavior.
+- **AC-disconnect watchdog** — `PowerLineStatus.Offline` during run →
+  force-exit (no point holding the device active on battery).
+- **Low-battery floor** — battery ≤30% → force-exit (death-spiral protection).
+- **Hard duration cap** — simulated sleep running >23 hours → force-exit
+  (belt-and-suspenders for any future runaway).
+
+When any guard fires, the user gets a balloon notification explaining why,
+the watchdog reason is logged to `surface-error.log`, and the system is
+released so Windows can attempt normal sleep recovery.
+
+Zero impact on variant A users who don't use the scheduler — the watchdog
+timer only exists while `FakeSleepMode.IsActive == true`. Watchdog tick
+cost: 2 Win32 reads + ~5 numeric compares + 1 log line every 60 seconds.
+
+### Settings dialog dark-mode pass
+
+The Settings dialog had partial dark-mode coverage in v1.3.0 — main
+background was dark but TabControl chrome, ComboBox dropdown buttons,
+scrollbars, and CheckBox/RadioButton glyphs still rendered as system-light.
+v1.3.1 does a thorough pass:
+
+- **`DarkTabControl` subclass** replaces plain TabControl when dark mode
+  is active. Suppresses `WM_ERASEBKGND`, fills the entire client area
+  dark in `OnPaint`, owner-draws tabs, and renders a subtle `#555`
+  border around the content area.
+- **ComboBox** dropdown arrow chrome via `SetWindowTheme(..., "DarkMode_CFD")`.
+  Switched from `FlatStyle.Flat` (which overrode the native theme) to
+  `FlatStyle.Standard` (which lets the dark theme take effect).
+- **ComboBox dropdown list scrollbars** via hook on `DropDown` event that
+  applies `DarkMode_Explorer` to the dropdown list's HWND every open
+  (handles lazy listbox creation).
+- **Scrollable panels** get `SetWindowTheme(..., "DarkMode_Explorer")` so
+  AutoScroll-generated scrollbars render dark.
+- **CheckBox + RadioButton** glyphs get the same dark-explorer theme.
+- **Inactive tab handle forcing**: TabControl creates child handles lazily,
+  so `SetWindowTheme` was silently skipping the inactive tab's controls.
+  We now force `.Handle` access on every TabPage at form-Shown so themes
+  apply uniformly, plus re-apply on `SelectedIndexChanged`.
+
+All dark-mode code paths early-return when `DarkMode.IsAppsDarkMode()` is
+false — light mode is entirely untouched.
+
+### Minor
+
+- Tab renamed: **"Hotkeys" → "General"** (the tab has more than just
+  hotkeys: run-at-login toggle, variant banner with Re-detect button).
+- **Re-detect button** taller (40px instead of 32) so the text descender
+  doesn't clip at high DPI.
+
+### Migration
+
+v1.3.0 → v1.3.1: drop-in replacement. Settings file (`settings.ini`)
+unchanged. No user-visible behavior change beyond the dark-mode polish
+and the watchdog kicking in if a fake-sleep run hits one of its trigger
+conditions.
+
+---
+
 ## v1.3.0 — 2026-05-16
 
 Auto-detects two distinct Surface app UI shapes and shapes the entire
