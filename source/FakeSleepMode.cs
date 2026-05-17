@@ -106,6 +106,50 @@ internal static class FakeSleepMode
 
     public static bool IsActive => _active;
 
+    // ---- Safety watchdog (Phase 9) -------------------------------------
+    //
+    // After the 2026-05-16 incident — where USB-C PD silently failed mid-night,
+    // the system kept consuming ~10-13 W from battery instead of charging,
+    // and our fake-sleep held the device active until physical battery death
+    // — we added these guards. They're not preventative (we can't fix
+    // Windows/Surface PD failures from user-mode) but they CONTAIN the
+    // damage: any sustained "supposedly charging but battery dropping"
+    // condition force-exits fake-sleep within a few minutes, letting Windows
+    // enter real Modern Standby (which often resets the stuck PD state).
+    //
+    // All guards share a single 60s WinForms.Timer. Each tick does 2 cheap
+    // Win32 reads + 4 numeric compares + 1 log line — negligible power.
+    private static System.Windows.Forms.Timer? _watchdogTimer;
+    private static DateTime _watchdogEnteredAt;
+    private static int      _watchdogBatteryAtEnter;
+    private static readonly List<(DateTime At, int Pct)> _watchdogSamples = new();
+    private static bool _watchdogTriggered;   // prevents recursive exit during tick
+
+    // Tunables. Conservative defaults; user-tunable in a future settings UI.
+    private const int    WatchdogTickMs              = 60_000;   // 60s polling
+    private const int    WatchdogMaxFakeSleepHours   = 23;       // hard duration cap (overnight schedules
+                                                                  // need 8-12h of headroom; 23 is "definitely
+                                                                  // a runaway by now, no legitimate use case")
+    private const int    WatchdogLowBatteryFloorPct  = 30;       // exit below this %
+    // Rate-based AC-health detection: only kicks in BELOW this battery level,
+    // because Smart-Charging-set-to-80% will legitimately discharge from
+    // 100% down to 80% while plugged in (firmware deliberately holds the cap).
+    // Above 80% we don't know if drops are Smart-Charging-discharge or PD
+    // failure; below 80% with charging set, drops are anomalous.
+    private const int    WatchdogSmartChargeCapPct   = 80;
+    private const int    WatchdogDropThresholdPct    = 3;        // % drop that flags as anomalous
+    private const int    WatchdogDropWindowMinutes   = 10;       // ...over this rolling window
+    private const int    WatchdogMinConsistentSamples = 3;       // ...require at least N samples with
+                                                                  // no upward bounce >1% (filters reading noise
+                                                                  // and brief workload spikes)
+
+    /// <summary>
+    /// Fires on the UI thread when a watchdog force-exits fake-sleep. The
+    /// string is a short human-readable reason suitable for a balloon
+    /// notification (TrayAppContext subscribes to surface this to the user).
+    /// </summary>
+    public static event Action<string>? WatchdogExited;
+
     // ---- Enter ---------------------------------------------------------
 
     /// <summary>
@@ -213,6 +257,11 @@ internal static class FakeSleepMode
             return "Could not show the simulated-sleep overlay: " + ex.Message;
         }
 
+        // --- 3b. Start safety watchdog (Phase 9) ------------------------
+        // Single 60s timer that runs all 4 guards (AC-health, AC-disconnect,
+        // low-battery-floor, hard-duration-cap). See class comment block above.
+        StartWatchdog();
+
         // --- 4. Schedule the action fire, if requested -----------------
         if (action != null && delaySeconds > 0)
         {
@@ -316,6 +365,10 @@ internal static class FakeSleepMode
     {
         if (!_active) return;
 
+        // Stop the safety watchdog first so its ticks can't race the exit
+        // teardown. Idempotent — no-op if watchdog wasn't started.
+        StopWatchdog();
+
         // Cancel any pending scheduled fire.
         try
         {
@@ -377,6 +430,191 @@ internal static class FakeSleepMode
         _origPowerMode  = null;
         _autoExitAfterFire = false;
         _active = false;
+    }
+
+    // ---- Safety watchdog implementation (Phase 9) ----------------------
+
+    private static void StartWatchdog()
+    {
+        try
+        {
+            StopWatchdog();   // defensive — never run two timers at once
+            _watchdogEnteredAt = DateTime.UtcNow;
+            _watchdogBatteryAtEnter = ReadBatteryPct();
+            _watchdogSamples.Clear();
+            _watchdogSamples.Add((_watchdogEnteredAt, _watchdogBatteryAtEnter));
+            _watchdogTriggered = false;
+
+            _watchdogTimer = new System.Windows.Forms.Timer { Interval = WatchdogTickMs };
+            _watchdogTimer.Tick += (_, _) => OnWatchdogTick();
+            _watchdogTimer.Start();
+            Logger.Error($"[INFO] FakeSleep watchdog armed (battery at enter: {_watchdogBatteryAtEnter}%)");
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ERR ] FakeSleep: StartWatchdog: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void StopWatchdog()
+    {
+        try
+        {
+            _watchdogTimer?.Stop();
+            _watchdogTimer?.Dispose();
+            _watchdogTimer = null;
+            _watchdogSamples.Clear();
+        }
+        catch { }
+    }
+
+    private static void OnWatchdogTick()
+    {
+        if (!_active || _watchdogTriggered) return;
+
+        try
+        {
+            var ps = System.Windows.Forms.SystemInformation.PowerStatus;
+            var nowUtc = DateTime.UtcNow;
+            var pct = ReadBatteryPct();
+            var pluggedIn = ps.PowerLineStatus == System.Windows.Forms.PowerLineStatus.Online;
+
+            _watchdogSamples.Add((nowUtc, pct));
+            // Prune samples older than the drop window — list stays bounded at
+            // ~11 entries (10 min window / 60s tick + 1).
+            var cutoff = nowUtc.AddMinutes(-WatchdogDropWindowMinutes);
+            _watchdogSamples.RemoveAll(s => s.At < cutoff);
+
+            Logger.Error($"[INFO] Watchdog tick: battery={pct}% pluggedIn={pluggedIn} elapsedMin={Math.Round((nowUtc - _watchdogEnteredAt).TotalMinutes,1)}");
+
+            // ---- Guard 1: hard duration cap -----------------------------
+            if ((nowUtc - _watchdogEnteredAt).TotalHours >= WatchdogMaxFakeSleepHours)
+            {
+                TriggerWatchdogExit($"Simulated sleep ran for {WatchdogMaxFakeSleepHours} hours — exiting as a safety cap.");
+                return;
+            }
+
+            // ---- Guard 2: AC unplugged ----------------------------------
+            // Enter() refuses to start on battery, so an Offline reading mid-run
+            // means cable was pulled. Exit immediately so the device can use real
+            // Modern Standby instead of being held active on battery.
+            if (!pluggedIn)
+            {
+                TriggerWatchdogExit("Power cable disconnected during simulated sleep — exiting to allow normal sleep.");
+                return;
+            }
+
+            // ---- Guard 3: low-battery floor -----------------------------
+            // Even with charging supposedly working, never let fake-sleep run
+            // the battery below this floor. Prevents the death-spiral end
+            // state where the system has too little headroom to recover.
+            if (pct <= WatchdogLowBatteryFloorPct)
+            {
+                TriggerWatchdogExit($"Battery hit {pct}% during simulated sleep — exiting to protect the battery (floor is {WatchdogLowBatteryFloorPct}%).");
+                return;
+            }
+
+            // ---- Guard 4: AC health (the critical one) ------------------
+            // The 2026-05-16 incident's signature: PowerLineStatus.Online was
+            // true, but charging silently delivered 0 W. Battery quietly drained
+            // ~10 W for hours. Detect: sustained downward % movement while
+            // 'plugged in'.
+            //
+            // Only active BELOW the Smart-Charging cap (80%). Above 80% the
+            // device may be legitimately discharging down to its set cap
+            // (e.g., user kept it at 100% temporarily and Smart Charging is
+            // now letting it return to the 80% hold level) — we don't want
+            // to false-flag normal firmware behavior.
+            //
+            // Below 80%: any sustained downward trend while plugged in is
+            // anomalous. Require N consistent samples (no upward bounce >1%)
+            // to filter out reading noise and brief workload spikes that
+            // briefly exceed charger output (e.g., background video render
+            // CPU bursts).
+            if (pct < WatchdogSmartChargeCapPct)
+            {
+                var windowStart = nowUtc.AddMinutes(-WatchdogDropWindowMinutes);
+                var samplesInWindow = _watchdogSamples.Where(s => s.At >= windowStart).OrderBy(s => s.At).ToList();
+                if (samplesInWindow.Count >= WatchdogMinConsistentSamples)
+                {
+                    var dropPct = samplesInWindow[0].Pct - pct;
+                    // Check for consistent decline: no sample may sit >1% above
+                    // its predecessor (allow flat or downward; small upward
+                    // wobble within reading noise is OK).
+                    bool consistentDecline = true;
+                    for (int i = 1; i < samplesInWindow.Count; i++)
+                    {
+                        if (samplesInWindow[i].Pct > samplesInWindow[i-1].Pct + 1)
+                        {
+                            consistentDecline = false;
+                            break;
+                        }
+                    }
+                    if (dropPct >= WatchdogDropThresholdPct && consistentDecline)
+                    {
+                        TriggerWatchdogExit(
+                            $"Battery dropped {dropPct}% in the last {WatchdogDropWindowMinutes} min despite being plugged in — " +
+                            $"charging appears to have stopped delivering power. Exiting to let Windows reset USB-C power negotiation.");
+                        return;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            // Watchdog must NEVER make things worse. Swallow errors and keep ticking.
+            Logger.Error($"[ERR ] FakeSleep watchdog tick: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void TriggerWatchdogExit(string reason)
+    {
+        if (_watchdogTriggered) return;
+        _watchdogTriggered = true;
+        Logger.Error($"[INFO] WATCHDOG EXIT: {reason}");
+
+        // Dispatch to UI thread for the actual Exit() + event fire. Watchdog
+        // tick already runs on UI thread (WinForms.Timer.Tick is UI-thread),
+        // but be defensive in case this ever gets called from elsewhere.
+        try
+        {
+            var first = _overlays.FirstOrDefault();
+            if (first != null && !first.IsDisposed)
+            {
+                first.BeginInvoke(() =>
+                {
+                    try { Exit(); }            catch { }
+                    try { WatchdogExited?.Invoke(reason); } catch { }
+                });
+            }
+            else
+            {
+                try { Exit(); }            catch { }
+                try { WatchdogExited?.Invoke(reason); } catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ERR ] FakeSleep: TriggerWatchdogExit dispatch: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Reads current battery % (0-100) using the same logic as the broader app.
+    /// Returns 0 if reading fails — that triggers the low-battery guard, which
+    /// is the safest behavior when we can't tell what's happening.
+    /// </summary>
+    private static int ReadBatteryPct()
+    {
+        try
+        {
+            var ps = System.Windows.Forms.SystemInformation.PowerStatus;
+            var f = ps.BatteryLifePercent;
+            if (float.IsNaN(f) || f < 0) return 0;
+            if (f > 1f) return 100;
+            return (int)Math.Round(f * 100);
+        }
+        catch { return 0; }
     }
 
     // ---- Crash recovery ------------------------------------------------
