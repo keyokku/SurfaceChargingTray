@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src        = Join-Path $root 'source'
 $srcDiag    = Join-Path $root 'source-diagnostic'
-$dist       = Join-Path $root 'dist\v1.3.1'
+$dist       = Join-Path $root 'dist\v1.4.0'
 
 # Stop running instances so the .exe files aren't locked.
 Get-Process -Name SurfaceChargingTray           -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -62,7 +62,7 @@ foreach ($rid in $rids) {
 # ---- Stage the single diagnostic zip (both arch exes flat) --------------
 if ($Arch -eq 'all') {
     Write-Host "Staging SurfaceChargingTrayDiagnostic.zip"
-    $stage = Join-Path $root 'release-staging\v1.3.1\diagnostic'
+    $stage = Join-Path $root 'release-staging\v1.4.0\diagnostic'
     if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
     New-Item -ItemType Directory -Path $stage | Out-Null
 
@@ -76,7 +76,7 @@ if ($Arch -eq 'all') {
     $readme = Join-Path $root 'source-diagnostic\README.txt'
     if (Test-Path $readme) { Copy-Item $readme (Join-Path $stage 'README.txt') }
 
-    $zipOut = Join-Path $root 'release-staging\v1.3.1\SurfaceChargingTrayDiagnostic.zip'
+    $zipOut = Join-Path $root 'release-staging\v1.4.0\SurfaceChargingTrayDiagnostic.zip'
     if (Test-Path $zipOut) { Remove-Item -Force $zipOut }
     Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zipOut -CompressionLevel Optimal
     "  -> {0:N2} MB" -f ((Get-Item $zipOut).Length / 1MB)

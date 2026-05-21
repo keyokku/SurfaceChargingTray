@@ -48,6 +48,17 @@ internal sealed class TriggerOneShotAction : ScheduledAction
 }
 
 /// <summary>
+/// One scheduled fire: an action plus how many seconds after fake-sleep
+/// entry it should run. v1.4.0 multi-slot scheduling passes a list of
+/// these to <see cref="FakeSleepMode.Enter(System.Collections.Generic.List{ScheduledFire}, SettingsModel.ScheduleExitMode)"/>.
+/// </summary>
+internal sealed class ScheduledFire
+{
+    public ScheduledAction Action       { get; set; } = null!;
+    public int             DelaySeconds { get; set; }
+}
+
+/// <summary>
 /// "Simulated sleep" mode — the engine behind the v1.2.0 charging-mode
 /// scheduler. Class name keeps the original "FakeSleep" internally; the
 /// user-visible wording is "simulated sleep".
@@ -89,14 +100,18 @@ internal static class FakeSleepMode
     private static bool _active;
     private static byte? _origBrightness;
     private static PowerMode.Mode? _origPowerMode;
-    private static bool _autoExitAfterFire;
     private static readonly List<Form> _overlays = new();
-    // Scheduled action to run while simulated sleep is active. One-shot timer.
-    // Generalized in v1.3.0 from {mode, duration} pair to a polymorphic
-    // ScheduledAction so variant B's TriggerOneShot can ride the same engine
-    // as variant A's SetMode. Null when no fire is scheduled.
+    // Multi-slot scheduled fires (v1.4.0). The engine sorts fires by delay,
+    // arms a single timer for the next-due fire, and re-arms after each one
+    // runs. _exitMode governs teardown (Stay / AfterFirst / AfterAll).
+    // v1.3.0 had a single ScheduledAction + bool auto-exit; this generalizes
+    // both. Empty _fires means "enter fake-sleep with no scheduled action"
+    // (manual dismiss only).
     private static System.Windows.Forms.Timer? _scheduledFire;
-    private static ScheduledAction? _scheduledAction;
+    private static List<ScheduledFire> _fires = new();
+    private static int _fireIndex;
+    private static DateTime _fakeSleepEnteredAt;
+    private static SettingsModel.ScheduleExitMode _exitMode = SettingsModel.ScheduleExitMode.Stay;
     // Suppress the overlay's "reassert topmost on Deactivate" handler while
     // a scheduled SetMode is in flight. Otherwise the handler will pull
     // focus back from the Surface app mid-UIA-traversal — the same race
@@ -153,40 +168,23 @@ internal static class FakeSleepMode
     // ---- Enter ---------------------------------------------------------
 
     /// <summary>
-    /// Variant A back-compat shim. Existing callers (TrayAppContext schedule-
-    /// toggle) pass a charging mode + optional duration; we wrap those into a
-    /// <see cref="SetModeAction"/> and delegate to the canonical action-based
-    /// overload below. Behavior identical to v1.2.x.
+    /// Enter fake-sleep with a list of scheduled fires (v1.4.0 multi-slot).
+    /// Each fire runs its action <see cref="ScheduledFire.DelaySeconds"/>
+    /// after entry, while fake-sleep holds the device awake so UWP renders
+    /// and UIA can drive the Surface app. Fires run in delay order.
+    ///
+    /// <paramref name="exitMode"/> governs teardown:
+    ///   Stay       — never auto-exit (user dismisses manually)
+    ///   AfterFirst — exit right after the first fire runs
+    ///   AfterAll   — exit after the last (latest) fire runs
+    ///
+    /// An empty <paramref name="fires"/> list just enters fake-sleep with no
+    /// scheduled action (manual-dismiss). Returns null on success, or a
+    /// short error string if entry was refused (e.g. on battery).
     /// </summary>
     public static string? Enter(
-        string? scheduledMode = null,
-        string? scheduledDuration = null,
-        int delaySeconds = 0,
-        bool autoExitAfterFire = false)
-    {
-        ScheduledAction? action = null;
-        if (!string.IsNullOrEmpty(scheduledMode))
-            action = new SetModeAction { Mode = scheduledMode, Duration = scheduledDuration };
-        return Enter(action, delaySeconds, autoExitAfterFire);
-    }
-
-    /// <summary>
-    /// Enter fake-sleep. If <paramref name="action"/> is non-null, a one-shot
-    /// timer fires <paramref name="delaySeconds"/> later and runs the action
-    /// in the background — while fake-sleep is still holding the device
-    /// awake, so UWP renders normally and UIA can drive the Surface app's
-    /// UI tree.
-    ///
-    /// Action types: <see cref="SetModeAction"/> for variant A (radio flip)
-    /// or <see cref="TriggerOneShotAction"/> for variant B (button invoke).
-    ///
-    /// Returns null on success, or a short error string if entry was refused
-    /// (e.g. on battery). Caller is responsible for surfacing the message.
-    /// </summary>
-    public static string? Enter(
-        ScheduledAction? action,
-        int delaySeconds = 0,
-        bool autoExitAfterFire = false)
+        List<ScheduledFire> fires,
+        SettingsModel.ScheduleExitMode exitMode = SettingsModel.ScheduleExitMode.Stay)
     {
         if (_active) return null;
 
@@ -199,7 +197,14 @@ internal static class FakeSleepMode
             return "Simulated sleep requires the device to be plugged in.";
 
         _active = true;
-        _autoExitAfterFire = autoExitAfterFire;
+        // Sort fires by delay so we arm them in chronological order.
+        _fires = (fires ?? new List<ScheduledFire>())
+            .Where(f => f.Action != null && f.DelaySeconds > 0)
+            .OrderBy(f => f.DelaySeconds)
+            .ToList();
+        _fireIndex = 0;
+        _exitMode = exitMode;
+        _fakeSleepEnteredAt = DateTime.UtcNow;
 
         // --- 1. Snapshot originals (do this BEFORE any mutation) --------
         try { _origBrightness = ReadBrightness(); }
@@ -262,28 +267,44 @@ internal static class FakeSleepMode
         // low-battery-floor, hard-duration-cap). See class comment block above.
         StartWatchdog();
 
-        // --- 4. Schedule the action fire, if requested -----------------
-        if (action != null && delaySeconds > 0)
+        // --- 4. Arm the first scheduled fire, if any -------------------
+        if (_fires.Count > 0)
         {
-            try
-            {
-                _scheduledAction = action;
-                // System.Windows.Forms.Timer interval is Int32 ms — max
-                // ~24.85 days. Clamp defensively.
-                long ms = Math.Min((long)delaySeconds * 1000L, int.MaxValue);
-                _scheduledFire = new System.Windows.Forms.Timer { Interval = (int)ms };
-                _scheduledFire.Tick += OnScheduledFire;
-                _scheduledFire.Start();
-                var autoEx = autoExitAfterFire ? " auto-exit" : "";
-                Logger.Error($"[INFO] Scheduled {action.Describe()} in {delaySeconds}s{autoEx}");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error($"[ERR ] FakeSleep: schedule timer start: {ex.GetType().Name}: {ex.Message}");
-            }
+            ArmNextFire();
+            var modes = string.Join(", ", _fires.Select(f => $"{f.Action.Describe()}@{f.DelaySeconds}s"));
+            Logger.Error($"[INFO] Scheduled {_fires.Count} fire(s): {modes} exit={_exitMode}");
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Arms a single one-shot timer for the next fire in the queue (relative
+    /// to entry time so cumulative drift doesn't accrue). No-op when the
+    /// queue is exhausted.
+    /// </summary>
+    private static void ArmNextFire()
+    {
+        if (_fireIndex >= _fires.Count) return;
+        try
+        {
+            var next = _fires[_fireIndex];
+            var elapsed = (DateTime.UtcNow - _fakeSleepEnteredAt).TotalSeconds;
+            // Remaining time until this fire's absolute delay. At least 1 ms
+            // (fire essentially now if we're already past it). Clamp to Int32.
+            double remainingMs = Math.Max(1.0, (next.DelaySeconds - elapsed) * 1000.0);
+            int intervalMs = (int)Math.Min(remainingMs, int.MaxValue);
+
+            _scheduledFire?.Stop();
+            _scheduledFire?.Dispose();
+            _scheduledFire = new System.Windows.Forms.Timer { Interval = intervalMs };
+            _scheduledFire.Tick += OnScheduledFire;
+            _scheduledFire.Start();
+        }
+        catch (Exception ex)
+        {
+            Logger.Error($"[ERR ] FakeSleep: ArmNextFire: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     private static void OnScheduledFire(object? sender, EventArgs e)
@@ -293,8 +314,10 @@ internal static class FakeSleepMode
         // can be 5-30s on a cold Surface app).
         try { _scheduledFire?.Stop(); } catch { }
 
-        var action = _scheduledAction;
-        if (action == null) return;
+        if (_fireIndex >= _fires.Count) return;
+        var fire = _fires[_fireIndex];
+        bool isLastFire = _fireIndex == _fires.Count - 1;
+        _fireIndex++;   // advance now so re-arming targets the next slot
 
         // Suppress the overlay's Deactivate->reassert-topmost handler for
         // the duration of the UIA traversal. Yanking focus back from the
@@ -313,47 +336,61 @@ internal static class FakeSleepMode
                 // back behind our overlay after UIA is done.
                 SurfaceController.SkipWindowHide = false;
 
-                var err = action.Execute();
+                var err = fire.Action.Execute();
                 if (err != null)
-                    Logger.Error($"[ERR ] Scheduled {action.Describe()} FAILED: {err}");
+                    Logger.Error($"[ERR ] Scheduled {fire.Action.Describe()} FAILED: {err}");
                 else
-                    Logger.Error($"[INFO] Scheduled {action.Describe()} OK");
+                    Logger.Error($"[INFO] Scheduled {fire.Action.Describe()} OK");
             }
             catch (Exception ex)
             {
-                Logger.Error($"[ERR ] Scheduled {action.Describe()} CRASHED: {ex.GetType().Name}: {ex.Message}");
+                Logger.Error($"[ERR ] Scheduled {fire.Action.Describe()} CRASHED: {ex.GetType().Name}: {ex.Message}");
             }
             finally
             {
                 _suppressTopmostReassert = false;
 
-                if (_autoExitAfterFire)
+                // Decide whether to exit, arm the next fire, or just hold.
+                bool shouldExit = _exitMode switch
                 {
-                    // Auto-exit lets the device's real Sleep / Screen-off
-                    // timeouts take over (overnight charging-then-sleep).
-                    try
+                    SettingsModel.ScheduleExitMode.AfterFirst => true,
+                    SettingsModel.ScheduleExitMode.AfterAll   => isLastFire,
+                    _                                          => false  // Stay
+                };
+
+                try
+                {
+                    var first = _overlays.FirstOrDefault();
+                    if (first != null && !first.IsDisposed)
                     {
-                        var first = _overlays.FirstOrDefault();
-                        if (first != null && !first.IsDisposed)
-                            first.BeginInvoke(() => { try { Exit(); } catch { } });
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Error($"[ERR ] FakeSleep: auto-exit dispatch: {ex.GetType().Name}: {ex.Message}");
+                        first.BeginInvoke(() =>
+                        {
+                            try
+                            {
+                                if (shouldExit)
+                                {
+                                    // Auto-exit lets the device's real Sleep /
+                                    // Screen-off timeouts take over.
+                                    Exit();
+                                }
+                                else
+                                {
+                                    // Re-grab keyboard focus so dismiss-on-key
+                                    // still works, then arm the next fire (if any).
+                                    try { first.Activate(); } catch { }
+                                    ArmNextFire();
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                Logger.Error($"[ERR ] FakeSleep: post-fire dispatch: {ex.GetType().Name}: {ex.Message}");
+                            }
+                        });
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    // HideWindow already pushed the Surface app to
-                    // HWND_BOTTOM; just re-grab keyboard focus on the
-                    // overlay so dismiss-on-key still works.
-                    try
-                    {
-                        var first = _overlays.FirstOrDefault();
-                        if (first != null && !first.IsDisposed)
-                            first.BeginInvoke(() => { try { first.Activate(); } catch { } });
-                    }
-                    catch { }
+                    Logger.Error($"[ERR ] FakeSleep: post-fire BeginInvoke: {ex.GetType().Name}: {ex.Message}");
                 }
             }
         });
@@ -369,13 +406,14 @@ internal static class FakeSleepMode
         // teardown. Idempotent — no-op if watchdog wasn't started.
         StopWatchdog();
 
-        // Cancel any pending scheduled fire.
+        // Cancel any pending scheduled fire + clear the fire queue.
         try
         {
             _scheduledFire?.Stop();
             _scheduledFire?.Dispose();
             _scheduledFire = null;
-            _scheduledAction = null;
+            _fires = new List<ScheduledFire>();
+            _fireIndex = 0;
             _suppressTopmostReassert = false;
         }
         catch (Exception ex)
@@ -428,7 +466,7 @@ internal static class FakeSleepMode
 
         _origBrightness = null;
         _origPowerMode  = null;
-        _autoExitAfterFire = false;
+        _exitMode = SettingsModel.ScheduleExitMode.Stay;
         _active = false;
     }
 

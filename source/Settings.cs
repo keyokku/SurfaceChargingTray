@@ -16,28 +16,51 @@ internal class SettingsModel
     /// <summary>Detected AUMID of the Surface app, cached so we don't re-discover on every run.</summary>
     public string? SurfaceAumid { get; set; }
 
-    // ---- Charging mode scheduler (v1.2.0+) ----------------------------
+    // ---- Charging mode scheduler (v1.2.0+, multi-slot v1.4.0+) ---------
     //
-    // Stored as a single "armed schedule" rather than a calendar of fires.
+    // v1.2.x-v1.3.x stored a single armed schedule (mode + duration + time).
+    // v1.4.0 generalizes to a LIST of up to 3 schedule slots, each with its
+    // own mode/duration/time, so a user can e.g. flip to 100% at 06:00 and
+    // back to 80% at 09:00 in one overnight simulated-sleep run.
+    //
     // When the user presses the schedule-toggle hotkey, the tray enters
-    // fake-sleep and computes the next-occurrence of ScheduleTime to fire
-    // a SetMode(ScheduleMode[, ScheduleDuration]). Clearing the schedule
-    // means setting ScheduleTime to null — no checkbox needed, the hotkey
-    // itself is the on/off.
+    // fake-sleep and arms a timer per slot (computed from each slot's
+    // next-occurrence). ScheduleAutoExit governs when fake-sleep tears down.
+    //
+    // Migration: old single-schedule settings.ini ([schedule] mode/duration/
+    // time/auto_exit) loads as a single slot; the old auto_exit bool maps to
+    // AfterFirst (1) or Stay (0).
 
-    /// <summary>"adaptive" / "80" / "100" — null means no schedule set.</summary>
-    public string? ScheduleMode { get; set; }
+    public sealed class ScheduleEntry
+    {
+        /// <summary>"adaptive" / "80" / "100" / "oneshot".</summary>
+        public string  Mode     { get; set; } = "";
+        /// <summary>"1day" / "1week" — only meaningful when Mode == "100".</summary>
+        public string? Duration { get; set; }
+        /// <summary>"HH:mm" 24h.</summary>
+        public string  Time     { get; set; } = "";
+    }
 
-    /// <summary>"1day" / "1week" — only meaningful when ScheduleMode == "100".</summary>
-    public string? ScheduleDuration { get; set; }
+    /// <summary>When to tear down simulated sleep relative to scheduled fires.</summary>
+    public enum ScheduleExitMode
+    {
+        /// <summary>Never auto-exit; user dismisses manually.</summary>
+        Stay,
+        /// <summary>Exit immediately after the first scheduled fire runs.</summary>
+        AfterFirst,
+        /// <summary>Exit only after the last (latest-time) scheduled fire runs.</summary>
+        AfterAll
+    }
 
-    /// <summary>"HH:mm" 24h — null means no time set (cleared schedule).</summary>
-    public string? ScheduleTime { get; set; }
+    /// <summary>0-3 schedule slots. Empty = no schedule armed.</summary>
+    public List<ScheduleEntry> Schedules { get; set; } = new();
 
-    /// <summary>true = tear down fake-sleep after the scheduled SetMode fires
-    /// so the device falls back to its real Sleep / Screen-off timeouts.
-    /// false = stay in fake-sleep until user dismisses.</summary>
-    public bool ScheduleAutoExit { get; set; }
+    /// <summary>Auto-exit behavior. Default AfterFirst preserves v1.2.x single-
+    /// slot behavior where auto_exit=1 meant "exit after the one fire".</summary>
+    public ScheduleExitMode ScheduleAutoExit { get; set; } = ScheduleExitMode.AfterFirst;
+
+    /// <summary>Hard cap on schedule slots — enforced by the Settings UI.</summary>
+    public const int MaxScheduleSlots = 3;
 
     /// <summary>
     /// Auto-discovered AutomationId / Name for the Battery & charging card and its
@@ -84,6 +107,34 @@ internal class SettingsModel
     /// <summary>Cached Name of the variant B one-shot button (disambiguator, not detection key).</summary>
     public string? OneShotButtonName     { get; set; }
 
+    // ---- Background tracking (v1.4.0+) ---------------------------------
+    //
+    // Lightweight state that persists across launches: battery health
+    // caching (so we don't WMI-probe on every menu hover), update-checker
+    // throttling (one HTTP call per day max), and calibration-reminder
+    // tracking (note when battery last hit 100%, and once-per-cycle flag
+    // so the reminder doesn't repeat).
+    //
+    // Stored in a separate [tracking] section in settings.ini to keep the
+    // user-facing config (hotkeys, schedule) easy to inspect.
+
+    /// <summary>ISO-8601 timestamp of the last successful battery-health read. Empty = never read.</summary>
+    public string? BatteryHealthCheckedAt { get; set; }
+    /// <summary>Short label rendered as a menu-item caption (e.g. "92% (148 cycles)"). Cached.</summary>
+    public string? BatteryHealthSummary   { get; set; }
+    /// <summary>Full hover tooltip text — capacity, design, manufacture date. Cached.</summary>
+    public string? BatteryHealthTooltip   { get; set; }
+
+    /// <summary>ISO-8601 timestamp of the last GitHub releases API check. Throttled to once/day.</summary>
+    public string? LastUpdateCheckAt      { get; set; }
+    /// <summary>Latest version tag observed on GitHub (e.g. "v1.4.0"). Null = no check yet.</summary>
+    public string? LatestKnownVersion     { get; set; }
+
+    /// <summary>ISO-8601 timestamp of the last time battery reached 100%. Empty = never observed.</summary>
+    public string? LastFullChargeAt       { get; set; }
+    /// <summary>True if calibration reminder fired this cycle (resets on next 100% reach).</summary>
+    public bool   CalibrationReminderShown { get; set; }
+
     public static readonly Dictionary<string, HotkeyEntry> Defaults = new()
     {
         // Charging modes
@@ -120,6 +171,14 @@ internal class SettingsModel
 
         try
         {
+            // Schedule slot accumulators — slotN_* keys can arrive in any
+            // order, so collect into a sorted dict keyed by slot index, then
+            // materialize into s.Schedules after the parse loop. Old single-
+            // schedule keys (mode/duration/time) accumulate separately and
+            // are migrated to slot 0 only if no slotN keys were present.
+            var slotEntries = new SortedDictionary<int, ScheduleEntry>();
+            string? legacyMode = null, legacyDuration = null, legacyTime = null;
+
             string section = "";
             foreach (var raw in File.ReadAllLines(Paths.Settings))
             {
@@ -175,19 +234,109 @@ internal class SettingsModel
                 }
                 else if (section == "schedule")
                 {
+                    var lkey = key.ToLowerInvariant();
+                    // New multi-slot keys: slot0_mode, slot0_duration, slot0_time, slot1_mode, ...
+                    if (lkey.StartsWith("slot"))
+                    {
+                        int us = lkey.IndexOf('_');
+                        if (us > 4 && int.TryParse(lkey[4..us], out int idx))
+                        {
+                            if (!slotEntries.TryGetValue(idx, out var entry))
+                            {
+                                entry = new ScheduleEntry();
+                                slotEntries[idx] = entry;
+                            }
+                            var field = lkey[(us + 1)..];
+                            switch (field)
+                            {
+                                case "mode":     entry.Mode     = val; break;
+                                case "duration": entry.Duration = string.IsNullOrEmpty(val) ? null : val; break;
+                                case "time":     entry.Time     = val; break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        switch (lkey)
+                        {
+                            // Legacy single-schedule keys (v1.2.x-v1.3.x). Held
+                            // aside; migrated to slot 0 only if no slotN keys.
+                            case "mode":      legacyMode     = string.IsNullOrEmpty(val) ? null : val; break;
+                            case "duration":  legacyDuration = string.IsNullOrEmpty(val) ? null : val; break;
+                            case "time":      legacyTime     = string.IsNullOrEmpty(val) ? null : val; break;
+                            case "auto_exit": s.ScheduleAutoExit = ParseExitMode(val); break;
+                        }
+                    }
+                }
+                else if (section == "tracking")
+                {
                     switch (key.ToLowerInvariant())
                     {
-                        case "mode":      s.ScheduleMode     = string.IsNullOrEmpty(val) ? null : val; break;
-                        case "duration":  s.ScheduleDuration = string.IsNullOrEmpty(val) ? null : val; break;
-                        case "time":      s.ScheduleTime     = string.IsNullOrEmpty(val) ? null : val; break;
-                        case "auto_exit": s.ScheduleAutoExit = (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
+                        case "battery_health_checked_at":   s.BatteryHealthCheckedAt   = val; break;
+                        case "battery_health_summary":      s.BatteryHealthSummary     = val; break;
+                        case "battery_health_tooltip":      s.BatteryHealthTooltip     = val; break;
+                        case "last_update_check_at":        s.LastUpdateCheckAt        = val; break;
+                        case "latest_known_version":        s.LatestKnownVersion       = val; break;
+                        case "last_full_charge_at":         s.LastFullChargeAt         = val; break;
+                        case "calibration_reminder_shown":  s.CalibrationReminderShown = (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
                     }
                 }
             }
+
+            // Materialize schedule slots. Prefer new slotN entries; fall back
+            // to migrating the legacy single-schedule keys into slot 0.
+            if (slotEntries.Count > 0)
+            {
+                foreach (var kv in slotEntries)
+                {
+                    var e = kv.Value;
+                    // Skip incomplete slots (mode + time both required).
+                    if (!string.IsNullOrEmpty(e.Mode) && !string.IsNullOrEmpty(e.Time))
+                        s.Schedules.Add(e);
+                }
+            }
+            else if (!string.IsNullOrEmpty(legacyMode) && !string.IsNullOrEmpty(legacyTime))
+            {
+                s.Schedules.Add(new ScheduleEntry
+                {
+                    Mode     = legacyMode!,
+                    Duration = legacyDuration,
+                    Time     = legacyTime!
+                });
+            }
+            // Enforce the slot cap even if settings.ini was hand-edited.
+            if (s.Schedules.Count > MaxScheduleSlots)
+                s.Schedules = s.Schedules.GetRange(0, MaxScheduleSlots);
         }
         catch { }
         return s;
     }
+
+    /// <summary>
+    /// Parses the auto_exit value. Accepts the new enum names
+    /// (stay/after_first/after_all) AND the legacy bool form (0/1/true/false),
+    /// mapping 1/true -> AfterFirst (old "exit after the one fire" behavior)
+    /// and 0/false -> Stay.
+    /// </summary>
+    private static ScheduleExitMode ParseExitMode(string val)
+    {
+        switch (val.Trim().ToLowerInvariant())
+        {
+            case "stay":         return ScheduleExitMode.Stay;
+            case "after_first":  return ScheduleExitMode.AfterFirst;
+            case "after_all":    return ScheduleExitMode.AfterAll;
+            case "1":
+            case "true":         return ScheduleExitMode.AfterFirst;   // legacy bool
+            default:             return ScheduleExitMode.Stay;          // "0"/"false"/unknown
+        }
+    }
+
+    private static string ExitModeToString(ScheduleExitMode m) => m switch
+    {
+        ScheduleExitMode.AfterFirst => "after_first",
+        ScheduleExitMode.AfterAll   => "after_all",
+        _                           => "stay"
+    };
 
     private bool HasUiaCacheData() =>
         !string.IsNullOrEmpty(BatteryCardId)        || !string.IsNullOrEmpty(BatteryCardName)
@@ -219,19 +368,42 @@ internal class SettingsModel
                 lines.Add("[surface]");
                 lines.Add($"aumid={SurfaceAumid}");
             }
-            // Emit schedule section only if any of its fields are non-default.
-            // Keeps settings.ini tidy on first launch / when no schedule armed.
-            if (!string.IsNullOrEmpty(ScheduleMode) ||
-                !string.IsNullOrEmpty(ScheduleDuration) ||
-                !string.IsNullOrEmpty(ScheduleTime) ||
-                ScheduleAutoExit)
+            // Emit schedule section only if there's at least one slot OR a
+            // non-default exit mode. Keeps settings.ini tidy when no schedule
+            // is armed. Multi-slot format: slotN_mode / slotN_duration /
+            // slotN_time, plus auto_exit as the enum string.
+            if (Schedules.Count > 0 || ScheduleAutoExit != ScheduleExitMode.AfterFirst)
             {
                 lines.Add("");
                 lines.Add("[schedule]");
-                AppendIfSet(lines, "mode",     ScheduleMode);
-                AppendIfSet(lines, "duration", ScheduleDuration);
-                AppendIfSet(lines, "time",     ScheduleTime);
-                lines.Add($"auto_exit={(ScheduleAutoExit ? 1 : 0)}");
+                lines.Add($"auto_exit={ExitModeToString(ScheduleAutoExit)}");
+                for (int i = 0; i < Schedules.Count; i++)
+                {
+                    var e = Schedules[i];
+                    if (string.IsNullOrEmpty(e.Mode) || string.IsNullOrEmpty(e.Time)) continue;
+                    AppendIfSet(lines, $"slot{i}_mode",     e.Mode);
+                    AppendIfSet(lines, $"slot{i}_duration", e.Duration);
+                    AppendIfSet(lines, $"slot{i}_time",     e.Time);
+                }
+            }
+            // Emit tracking section only if any field is non-default.
+            if (!string.IsNullOrEmpty(BatteryHealthCheckedAt) ||
+                !string.IsNullOrEmpty(BatteryHealthSummary)   ||
+                !string.IsNullOrEmpty(BatteryHealthTooltip)   ||
+                !string.IsNullOrEmpty(LastUpdateCheckAt)      ||
+                !string.IsNullOrEmpty(LatestKnownVersion)     ||
+                !string.IsNullOrEmpty(LastFullChargeAt)       ||
+                CalibrationReminderShown)
+            {
+                lines.Add("");
+                lines.Add("[tracking]");
+                AppendIfSet(lines, "battery_health_checked_at",  BatteryHealthCheckedAt);
+                AppendIfSet(lines, "battery_health_summary",     BatteryHealthSummary);
+                AppendIfSet(lines, "battery_health_tooltip",     BatteryHealthTooltip);
+                AppendIfSet(lines, "last_update_check_at",       LastUpdateCheckAt);
+                AppendIfSet(lines, "latest_known_version",       LatestKnownVersion);
+                AppendIfSet(lines, "last_full_charge_at",        LastFullChargeAt);
+                lines.Add($"calibration_reminder_shown={(CalibrationReminderShown ? 1 : 0)}");
             }
             // Only emit cache section if we've discovered at least one value;
             // keeps a fresh settings.ini tidy on first launch before any lookup.

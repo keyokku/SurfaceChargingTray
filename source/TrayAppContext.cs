@@ -54,6 +54,19 @@ internal sealed class TrayAppContext : ApplicationContext
     // Last theme we actually pushed; lets the timer no-op when nothing
     // changed (the common case).
     private bool? _appliedSystemDark;
+    // Battery-health click → keep the menu open. Click handler sets this;
+    // the menu's Closing handler honors it once and resets.
+    private bool _suppressMenuClose = false;
+    // Tracks the last applied tray icon by a string key so we can short-circuit
+    // ApplyTrayIcon when nothing actually changed. Considers BOTH system theme
+    // AND current charging mode now that v1.4.0 swaps colored mode icons in
+    // addition to the dark/light plug fallback.
+    private string _lastAppliedIconKey = "";
+    // Last reported variant B state from OneShotStateWatcher. Cached so
+    // ApplyTrayIcon can compute the right icon without re-querying the
+    // watcher (and to handle the brief window between construction and
+    // first state report).
+    private OneShotStateWatcher.ButtonState _lastVariantBState = OneShotStateWatcher.ButtonState.Unknown;
     private bool? _appliedAppsDark;
 
     private SettingsModel _settings;
@@ -90,6 +103,11 @@ internal sealed class TrayAppContext : ApplicationContext
     private readonly ToolStripMenuItem _miPowerEff;
     private readonly ToolStripMenuItem _miPowerBal;
     private readonly ToolStripMenuItem _miPowerPerf;
+    // Battery Health menu item (v1.4.0). Informational — disabled (not
+    // clickable). Caption shows compact summary, full info on hover.
+    // Cached 24h via SettingsModel.BatteryHealthCheckedAt; refresh kicked
+    // off on first menu open after cache expiry.
+    private readonly ToolStripMenuItem _miBatteryHealth;
     private readonly ToolStripMenuItem _miRefresh;
     private readonly ToolStripMenuItem _miOpenApp;
     private readonly ToolStripMenuItem _miSettings;
@@ -140,11 +158,38 @@ internal sealed class TrayAppContext : ApplicationContext
         _miPower     = new ToolStripMenuItem("Windows Power mode");
         _miPower.DropDownItems.AddRange(new ToolStripItem[] { _miPowerEff, _miPowerBal, _miPowerPerf });
 
+        _miBatteryHealth = new ToolStripMenuItem("Battery health: (checking...)",
+            (Image?)null, (s, e) =>
+            {
+                // Suppress the menu's auto-close (this is an informational
+                // item — closing the menu would be jarring). The menu's
+                // Closing handler honors this flag once and resets.
+                _suppressMenuClose = true;
+                // Click forces a fresh WMI read (bypasses 24h cache) so users
+                // who want up-to-the-second data can refresh on demand. Result
+                // updates both the menu caption and the hover tooltip.
+                ForceBatteryHealthRefresh();
+            });
+        // Render cached value at construction so the menu doesn't show
+        // "(checking...)" on every launch if we already have data.
+        ApplyCachedBatteryHealth();
+
         _miRefresh   = new ToolStripMenuItem("Refresh status",          (Image?)null, (s, e) => StartRefresh());
         _miOpenApp   = new ToolStripMenuItem("Open Surface app",        (Image?)null, (s, e) => OpenSurfaceApp());
         _miSettings  = new ToolStripMenuItem("Settings...",             (Image?)null, (s, e) => ShowSettings());
         _miShowError = new ToolStripMenuItem("Show last error",         (Image?)null, (s, e) => ShowLastError());
         _miExit      = new ToolStripMenuItem("Exit",                    (Image?)null, (s, e) => ExitThread());
+
+#if DEV_TEST_TRIGGERS
+        // Dev-only test triggers for the v1.4.0 ErrorDialog log viewer.
+        // Wrapped in #if so they NEVER ship in a release build — flag is
+        // set only when csproj has <DefineConstants>DEV_TEST_TRIGGERS</DefineConstants>.
+        var miTestGenericError = new ToolStripMenuItem("(dev) Test: generic error",   (Image?)null, (s, e) =>
+            ReportError("Test error — this is a simulated generic error to exercise the ErrorDialog log viewer. The textbox below should show recent log entries."));
+        var miTestDetectionError = new ToolStripMenuItem("(dev) Test: detection-failure error", (Image?)null, (s, e) =>
+            ReportError("Battery & charging card not found — the Surface app's UI may not support automation on this device, or the card may have moved."));
+        var miTestShowLastError = new ToolStripMenuItem("(dev) Test: open last-error dialog", (Image?)null, (s, e) => ShowLastError());
+#endif
 
         // Layout: charging modes [---] Schedule, Power mode [---] secondary actions.
         // All items always exist in the menu; ApplyVariantToMenu toggles
@@ -158,20 +203,57 @@ internal sealed class TrayAppContext : ApplicationContext
             new ToolStripSeparator(),
             _miSchedule,
             _miPower,
+            _miBatteryHealth,
             new ToolStripSeparator(),
             _miRefresh, _miOpenApp, _miSettings, _miShowError, _miExit
         });
+
+#if DEV_TEST_TRIGGERS
+        // Dev test triggers appended at the bottom of the menu after _miExit
+        // so they're visually separated from the real items.
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add(miTestGenericError);
+        _menu.Items.Add(miTestDetectionError);
+        _menu.Items.Add(miTestShowLastError);
+#endif
 
         // Hide the Power-mode submenu entirely on systems that don't expose
         // overlays (very old Windows builds, server SKUs).
         if (!PowerMode.IsSupported())
             _miPower.Visible = false;
 
+        // v1.4.0: bump the menu's internal tooltip auto-pop delay to 30s
+        // so the multi-line Battery Health hover doesn't time out before
+        // the user can read it. Single call, applies to all menu-item
+        // ToolTipTexts in this menu.
+        ExtendMenuTooltipDuration(30_000);
+
+        // Battery-health menu item should stay open when clicked (it's
+        // informational; closing the menu would feel jarring). The Click
+        // handler sets _suppressMenuClose; this Closing hook honors it
+        // exactly once. ContextMenuStrip fires Click then Closing in that
+        // order, so the flag is set in time.
+        _menu.Closing += (_, e) =>
+        {
+            if (e.CloseReason == ToolStripDropDownCloseReason.ItemClicked && _suppressMenuClose)
+            {
+                e.Cancel = true;
+                _suppressMenuClose = false;
+            }
+        };
+
         // Tray menu open: variant B's watcher (if instantiated) takes the
         // opportunity to refresh the one-shot button state. No-op for
         // variant A (watcher is null). Cheap when the watcher decides to
         // skip per its 30s debounce.
-        _menu.Opening += (_, _) => _oneShotWatcher?.OnMenuOpening();
+        _menu.Opening += (_, _) =>
+        {
+            _oneShotWatcher?.OnMenuOpening();
+            // Battery health refresh — only fires if cache > 24h old.
+            // Cheap: just a timestamp check on hot path; the WMI probe
+            // happens on a background Task.
+            RefreshBatteryHealthIfStale();
+        };
 
         // Fake-sleep safety watchdog (Phase 9): force-exit fires here with
         // a reason. Surface it as a balloon so the user knows simulated
@@ -224,7 +306,13 @@ internal sealed class TrayAppContext : ApplicationContext
                     EnableRaisingEvents = true
                 };
                 FileSystemEventHandler handler = (_, _) =>
-                    _ui.Post(_ => { try { UpdateMenuFromCache(); } catch { } }, null);
+                    _ui.Post(_ =>
+                    {
+                        try { UpdateMenuFromCache(); } catch { }
+                        // Refresh tray icon — v1.4.0+ swaps colored mode
+                        // icons when StateStore changes (variant A path).
+                        try { ApplyTrayIcon(); } catch { }
+                    }, null);
                 _stateWatcher.Changed += handler;
                 _stateWatcher.Created += handler;
             }
@@ -247,13 +335,37 @@ internal sealed class TrayAppContext : ApplicationContext
         // even after a stretch of activity. 5 min is conservative; the OS
         // would do this on its own under memory pressure, we just don't
         // wait for it.
+        // Also hosts the v1.4.0 calibration-reminder check — cheap
+        // (SystemInformation.PowerStatus read + a few timestamp compares)
+        // and the 5-min cadence is fine for catching the noon-ish window
+        // (11:00-14:00) when the user-facing toast should fire.
         _trimTimer = new System.Windows.Forms.Timer { Interval = 5 * 60 * 1000 };
-        _trimTimer.Tick += (s, e) => { if (!_busy) TrimWorkingSet(); };
+        _trimTimer.Tick += (s, e) =>
+        {
+            if (!_busy) TrimWorkingSet();
+            CheckCalibrationReminder();
+        };
         _trimTimer.Start();
 
         // Initial trim after construction completes — one-time pages used
         // for JIT during startup aren't needed anymore.
         TrimWorkingSet();
+
+        // Seed LastFullChargeAt with "now" on first run so we have a
+        // baseline for the 30-day calibration reminder. Without this,
+        // users who install fresh and never reach 100% would never get
+        // the reminder (no baseline to measure 30 days from).
+        if (string.IsNullOrEmpty(_settings.LastFullChargeAt))
+        {
+            _settings.LastFullChargeAt = DateTime.UtcNow.ToString("o");
+            _settings.Save();
+        }
+
+        // Kick off the GitHub releases update check in the background.
+        // Throttled to once/24h via settings; silent on failure. If a
+        // newer release is found, a balloon notification appears with
+        // a one-shot click handler to open the releases page.
+        KickOffUpdateCheck();
     }
 
     // ---- Mode switching ------------------------------------------------
@@ -506,6 +618,8 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private void OnOneShotStateChanged(OneShotStateWatcher.ButtonState s)
     {
+        // Cache for the tray-icon swap (ApplyTrayIcon reads this).
+        _lastVariantBState = s;
         // Menu item text never changes — only the Enabled (greyed) state.
         // Standard Windows UX: disabled items aren't relabeled. The hover
         // tooltip on the menu item (set at construction) explains why.
@@ -516,23 +630,25 @@ internal sealed class TrayAppContext : ApplicationContext
             case OneShotStateWatcher.ButtonState.Enabled:
                 // Smart Charging is actively limiting (typically holding at 80%).
                 _mi100OneShot.Enabled = true;
-                _icon.Text = ClampTooltip("Surface Charging: Smart");
+                _icon.Text = ComposeTooltip("Surface Charging: Smart");
                 break;
             case OneShotStateWatcher.ButtonState.Disabled:
                 // Either override already triggered (going to 100%) or Smart
                 // Charging not limiting (also going to 100%). Either way the
                 // device is on the path to 100%.
                 _mi100OneShot.Enabled = false;
-                _icon.Text = ClampTooltip("Surface Charging: To 100%");
+                _icon.Text = ComposeTooltip("Surface Charging: To 100%");
                 break;
             case OneShotStateWatcher.ButtonState.Unknown:
                 // Initial / indeterminate state. Render as clickable; if the
                 // user clicks, TriggerOneShot's IsEnabled guard will surface
                 // a clean error if it turns out the button is disabled.
                 _mi100OneShot.Enabled = true;
-                _icon.Text = ClampTooltip("Surface Charging");
+                _icon.Text = ComposeTooltip("Surface Charging");
                 break;
         }
+        // Refresh tray icon so the colored mode icon swaps with the state.
+        ApplyTrayIcon();
     }
 
     private void StartRefresh()
@@ -638,10 +754,70 @@ internal sealed class TrayAppContext : ApplicationContext
     private void ApplyTrayIcon()
     {
         bool dark = DarkMode.IsSystemDarkMode();
-        if (_appliedSystemDark == dark) return;   // no theme change since last tick
         _appliedSystemDark = dark;
-        try { _icon.Icon = dark ? _iconWhite : _iconBlack; }
+
+        // v1.4.0+ chooses among colored mode icons (Adaptive/80%/100%) when
+        // we know the current state, falling back to the dark/light plug
+        // icon when state is unknown or the app is in an error state.
+        string key = ComputeTrayIconKey(dark);
+        if (key == _lastAppliedIconKey) return;
+        _lastAppliedIconKey = key;
+
+        try
+        {
+            _icon.Icon = key switch
+            {
+                "adaptive-dark"  => IconBuilder.Get(IconBuilder.Badge.Adaptive,  true),
+                "adaptive-light" => IconBuilder.Get(IconBuilder.Badge.Adaptive,  false),
+                "80-dark"        => IconBuilder.Get(IconBuilder.Badge.Limit80,   true),
+                "80-light"       => IconBuilder.Get(IconBuilder.Badge.Limit80,   false),
+                "100-dark"       => IconBuilder.Get(IconBuilder.Badge.Charge100, true),
+                "100-light"      => IconBuilder.Get(IconBuilder.Badge.Charge100, false),
+                "dark-plug"      => _iconWhite,
+                _                => _iconBlack
+            };
+        }
         catch { }
+    }
+
+    /// <summary>
+    /// Resolves the current charging state to a tray-icon key. Keys map to
+    /// either a badged mode icon (adaptive/80/100) or the dark/light plug
+    /// fallback. The mode keys are theme-suffixed (e.g. "adaptive-dark")
+    /// because we cache one variant per theme (the badged icon overlays
+    /// the plug, and the plug differs between dark/light system tray).
+    /// Error state forces the plug fallback so the user can still see
+    /// the icon-with-error-overlay via the menu's 'Show last error'.
+    /// </summary>
+    private string ComputeTrayIconKey(bool dark)
+    {
+        string plug = dark ? "dark-plug" : "light-plug";
+        if (!string.IsNullOrEmpty(_lastError)) return plug;
+        string suffix = dark ? "-dark" : "-light";
+
+        if (_currentVariant == SurfaceUiVariant.A)
+        {
+            var st = StateStore.Load();
+            return st.Mode switch
+            {
+                "adaptive" => "adaptive" + suffix,
+                "80"       => "80"       + suffix,
+                "100"      => "100"      + suffix,
+                _          => plug
+            };
+        }
+        if (_currentVariant == SurfaceUiVariant.B)
+        {
+            return _lastVariantBState switch
+            {
+                // Smart Charging engaged = adaptive-style green squiggle
+                OneShotStateWatcher.ButtonState.Enabled  => "adaptive" + suffix,
+                // Override active OR not currently limiting = "going to 100%"
+                OneShotStateWatcher.ButtonState.Disabled => "100"      + suffix,
+                _                                         => plug
+            };
+        }
+        return plug;
     }
 
     private void ApplyMenuTheme()
@@ -658,10 +834,12 @@ internal sealed class TrayAppContext : ApplicationContext
 
         // Tooltip: variant B has no persistent "current mode" — show a
         // simple label. Variant A and Unknown keep the v1.2.x format.
+        string line1;
         if (_currentVariant == SurfaceUiVariant.B)
-            _icon.Text = ClampTooltip("Surface Charging");
+            line1 = "Surface Charging";
         else
-            _icon.Text = ClampTooltip("Surface Charging: " + LabelFor(st.Mode, st.Duration));
+            line1 = "Surface Charging: " + LabelFor(st.Mode, st.Duration);
+        _icon.Text = ComposeTooltip(line1);
 
         // Variant A mode-item check marks. Updating these for variant B
         // is a harmless no-op (the items are Visible=false) but kept
@@ -671,6 +849,222 @@ internal sealed class TrayAppContext : ApplicationContext
         _mi80.Checked       = st.Mode == "80";
         _mi100Day.Checked   = st.Mode == "100" && st.Duration == "1day";
         _mi100Week.Checked  = st.Mode == "100" && st.Duration == "1week";
+
+        // Keep the tray icon in sync with the (possibly changed) mode.
+        // No-op via ApplyTrayIcon's key-equality short-circuit if nothing
+        // actually changed since last call.
+        ApplyTrayIcon();
+    }
+
+    /// <summary>
+    /// Composes the tray-icon tooltip with the new v1.4.0 second line
+    /// showing the current Windows Power mode. NotifyIcon.Text is limited
+    /// to 127 chars on Win11; ClampTooltip enforces.
+    /// </summary>
+    private string ComposeTooltip(string firstLine)
+    {
+        var pm = PowerMode.Get();
+        if (pm == PowerMode.Mode.Unknown) return ClampTooltip(firstLine);
+        return ClampTooltip(firstLine + "\n" + "Power mode: " + PowerMode.Label(pm));
+    }
+
+    // ---- Battery health (v1.4.0) ---------------------------------------
+
+    /// <summary>
+    /// Populate the menu item caption + hover tooltip from whatever's in
+    /// settings.ini at construction. Idempotent — also called after a fresh
+    /// async read completes.
+    /// </summary>
+    private void ApplyCachedBatteryHealth()
+    {
+        _miBatteryHealth.Text = string.IsNullOrEmpty(_settings.BatteryHealthSummary)
+            ? "Battery health: (checking...)"
+            : _settings.BatteryHealthSummary;
+        _miBatteryHealth.ToolTipText = _settings.BatteryHealthTooltip ?? "";
+    }
+
+    /// <summary>
+    /// If the cache is older than 24h (or empty), schedule a background
+    /// WMI read. Writes the result back to settings.ini + updates the
+    /// menu item. Safe to call on every menu open; cheap when cached.
+    /// </summary>
+    private void RefreshBatteryHealthIfStale()
+    {
+        bool stale = string.IsNullOrEmpty(_settings.BatteryHealthCheckedAt)
+                  || !DateTime.TryParse(_settings.BatteryHealthCheckedAt, out var lastAt)
+                  || (DateTime.UtcNow - lastAt.ToUniversalTime()).TotalHours >= 24;
+        if (stale) RunBatteryHealthRead();
+    }
+
+    /// <summary>
+    /// Click handler — bypasses the 24h cache and forces an immediate
+    /// re-read. Used when the user wants up-to-the-second data instead
+    /// of the day-old cache.
+    /// </summary>
+    private void ForceBatteryHealthRefresh() => RunBatteryHealthRead();
+
+    private void RunBatteryHealthRead()
+    {
+        Task.Run(() =>
+        {
+            BatteryHealthReader.Result? r = null;
+            try { r = BatteryHealthReader.Read(); }
+            catch (Exception ex)
+            {
+                try { Logger.Error($"[INFO] BatteryHealthReader: {ex.GetType().Name}: {ex.Message}"); } catch { }
+            }
+            if (r == null) return;
+            _ui.Post(_ =>
+            {
+                try
+                {
+                    _settings.BatteryHealthSummary   = r.Summary;
+                    _settings.BatteryHealthTooltip   = r.Tooltip;
+                    _settings.BatteryHealthCheckedAt = DateTime.UtcNow.ToString("o");
+                    _settings.Save();
+                    ApplyCachedBatteryHealth();
+                }
+                catch { }
+            }, null);
+        });
+    }
+
+    /// <summary>
+    /// Extends the ContextMenuStrip's internal ToolTip AutoPopDelay so the
+    /// Battery Health hover tooltip (multi-line, takes a moment to read)
+    /// doesn't time out in the default 5 seconds. Uses reflection because
+    /// ToolStrip.toolTip is internal — wrapped in try/catch so any future
+    /// WinForms internal rename degrades to the default duration silently.
+    /// </summary>
+    private void ExtendMenuTooltipDuration(int autoPopMs)
+    {
+        try
+        {
+            var fld = typeof(System.Windows.Forms.ToolStrip).GetField("toolTip",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (fld?.GetValue(_menu) is System.Windows.Forms.ToolTip tt)
+            {
+                tt.AutoPopDelay = autoPopMs;
+                tt.InitialDelay = 500;
+                tt.ReshowDelay  = 200;
+            }
+        }
+        catch (Exception ex)
+        {
+            try { Logger.Error($"[INFO] ExtendMenuTooltipDuration: {ex.GetType().Name}: {ex.Message}"); } catch { }
+        }
+    }
+
+    // ---- Calibration reminder (v1.4.0) ---------------------------------
+
+    /// <summary>
+    /// Tracks the last observed battery percent so we can detect the
+    /// transition into 100% (only fires the reminder reset once per cycle,
+    /// not on every tick at 100%).
+    /// </summary>
+    private int _calibLastBatteryPct = -1;
+
+    /// <summary>
+    /// Called from the _trimTimer tick (~5 min). Updates LastFullChargeAt
+    /// when battery hits 100%, and fires a one-time toast notification if
+    /// 30 days have elapsed since the last full charge and current local
+    /// time is in the 11:00-14:00 window (so the user is likely active
+    /// and the notification isn't lost at 3am).
+    /// </summary>
+    private void CheckCalibrationReminder()
+    {
+        try
+        {
+            var ps = SystemInformation.PowerStatus;
+            float pf = ps.BatteryLifePercent;
+            if (float.IsNaN(pf) || pf < 0) return;
+            int pct = (int)Math.Round(Math.Min(pf, 1f) * 100);
+            if (pct < 0 || pct > 100) return;
+
+            // Detect transition to 100% (charging complete this cycle).
+            if (_calibLastBatteryPct >= 0 && _calibLastBatteryPct < 100 && pct >= 100)
+            {
+                _settings.LastFullChargeAt = DateTime.UtcNow.ToString("o");
+                _settings.CalibrationReminderShown = false;
+                _settings.Save();
+            }
+            _calibLastBatteryPct = pct;
+
+            // Reminder fired this cycle already — wait for next full charge to reset.
+            if (_settings.CalibrationReminderShown) return;
+            if (string.IsNullOrEmpty(_settings.LastFullChargeAt)) return;
+            if (!DateTime.TryParse(_settings.LastFullChargeAt, out var lastFull)) return;
+
+            var daysSince = (DateTime.UtcNow - lastFull.ToUniversalTime()).TotalDays;
+            if (daysSince < 30) return;
+
+            // Noon-ish window so the toast is seen by an active user.
+            var hour = DateTime.Now.Hour;
+            if (hour < 11 || hour > 14) return;
+
+            _settings.CalibrationReminderShown = true;
+            _settings.Save();
+            _icon.ShowBalloonTip(15_000,
+                "Battery calibration suggestion",
+                "Your battery hasn't reached 100% in over 30 days. A full 0 -> 100% cycle helps the fuel gauge stay accurate. " +
+                "Consider switching Smart Charging to 'Adaptive' or 'Charge to 100%' temporarily.",
+                ToolTipIcon.Info);
+        }
+        catch { }
+    }
+
+    // ---- Update check (v1.4.0) -----------------------------------------
+
+    /// <summary>
+    /// Fired once, near the end of construction. Async, non-blocking.
+    /// Hits the GitHub Releases API (throttled to once/24h via settings),
+    /// pops a tray balloon if a newer release tag is found. Click on the
+    /// balloon opens the releases page. Silent on failure — update check
+    /// is opportunistic.
+    /// </summary>
+    private void KickOffUpdateCheck()
+    {
+        Task.Run(async () =>
+        {
+            try
+            {
+                var v = typeof(TrayAppContext).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+                var r = await UpdateChecker.CheckAsync(_settings, v).ConfigureAwait(false);
+                if (r?.UpdateAvailable != true) return;
+
+                _ui.Post(_ =>
+                {
+                    try
+                    {
+                        _icon.ShowBalloonTip(15_000,
+                            "Update available",
+                            $"{r.LatestTag} is now available. Click to view release notes.",
+                            ToolTipIcon.Info);
+
+                        // Wire a single-use click handler that opens the
+                        // releases page. Unsubscribe immediately on click
+                        // so we don't accumulate handlers across multiple
+                        // balloon shows.
+                        EventHandler? clickHandler = null;
+                        clickHandler = (_, _) =>
+                        {
+                            try
+                            {
+                                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(r.ReleasesUrl)
+                                {
+                                    UseShellExecute = true
+                                });
+                            }
+                            catch { }
+                            if (clickHandler != null) _icon.BalloonTipClicked -= clickHandler;
+                        };
+                        _icon.BalloonTipClicked += clickHandler;
+                    }
+                    catch { }
+                }, null);
+            }
+            catch { }
+        });
     }
 
     private static string LabelFor(string? mode, string? duration) => mode switch
@@ -684,7 +1078,11 @@ internal sealed class TrayAppContext : ApplicationContext
     };
 
     /// <summary>NotifyIcon.Text has a 127-char limit; clip just in case.</summary>
-    private static string ClampTooltip(string s) => s.Length > 63 ? s[..63] : s;
+    // NotifyIcon.Text limit: 64 chars on XP (legacy), 128 chars on Vista+
+    // (Win10/11 firmly in the 128-char era). We cap at 127 to leave room
+    // for the null terminator. Old 63-char cap was truncating the two-line
+    // tooltip mid-word ("Best power efficiency" → "Best power").
+    private static string ClampTooltip(string s) => s.Length > 127 ? s[..127] : s;
 
     // ---- Simulated-sleep scheduler ------------------------------------
 
@@ -724,33 +1122,31 @@ internal sealed class TrayAppContext : ApplicationContext
         // Re-load settings — the user may have changed the schedule between
         // tray launch and now.
         var s = SettingsModel.Load();
-        int delay = 0;
-        ScheduledAction? action = null;
 
-        if (!string.IsNullOrEmpty(s.ScheduleTime) && !string.IsNullOrEmpty(s.ScheduleMode))
+        // Build one ScheduledFire per configured slot, each with its delay
+        // to the next occurrence of its time. Skip slots whose time can't be
+        // parsed or whose delay is 0.
+        var fires = new List<ScheduledFire>();
+        foreach (var slot in s.Schedules)
         {
-            delay = SecondsUntilNextOccurrence(s.ScheduleTime!);
-            if (delay > 0)
-            {
-                // Variant-B schedule: serialized as ScheduleMode='oneshot' (no
-                // duration). Variant-A schedule: ScheduleMode is one of
-                // 'adaptive'/'80'/'100' with optional ScheduleDuration. The
-                // action subtype encapsulates which SurfaceController call
-                // fires at delay-end.
-                if (s.ScheduleMode == "oneshot")
-                    action = new TriggerOneShotAction();
-                else
-                    action = new SetModeAction { Mode = s.ScheduleMode!, Duration = s.ScheduleDuration };
-            }
+            if (string.IsNullOrEmpty(slot.Time) || string.IsNullOrEmpty(slot.Mode)) continue;
+            int delay = SecondsUntilNextOccurrence(slot.Time);
+            if (delay <= 0) continue;
+
+            // Variant-B schedule: Mode='oneshot' (no duration). Variant-A:
+            // Mode is 'adaptive'/'80'/'100' with optional Duration. The action
+            // subtype encapsulates which SurfaceController call fires.
+            ScheduledAction action = slot.Mode == "oneshot"
+                ? new TriggerOneShotAction()
+                : new SetModeAction { Mode = slot.Mode, Duration = slot.Duration };
+
+            fires.Add(new ScheduledFire { Action = action, DelaySeconds = delay });
         }
 
         string? err;
         try
         {
-            err = FakeSleepMode.Enter(
-                action:            action,
-                delaySeconds:      delay,
-                autoExitAfterFire: s.ScheduleAutoExit);
+            err = FakeSleepMode.Enter(fires, s.ScheduleAutoExit);
         }
         catch (Exception ex)
         {
@@ -836,19 +1232,34 @@ internal sealed class TrayAppContext : ApplicationContext
 
     private static string FormatScheduleLabel(SettingsModel s)
     {
-        if (string.IsNullOrEmpty(s.ScheduleTime) || string.IsNullOrEmpty(s.ScheduleMode))
-            return "(not set)";
-        string modeText = s.ScheduleMode switch
+        if (s.Schedules.Count == 0) return "(not set)";
+
+        // Single slot: full "HH:MM — mode" label (as in v1.2.x-v1.3.x).
+        if (s.Schedules.Count == 1)
+            return FormatSlotLabel(s.Schedules[0]);
+
+        // Multiple slots: compact "HH:MM, HH:MM, HH:MM (N modes)" — the full
+        // detail lives in the Settings → Schedule tab; the menu just shows
+        // the times so the user knows it's armed and when.
+        var times = string.Join(", ", s.Schedules
+            .OrderBy(e => e.Time, StringComparer.Ordinal)
+            .Select(e => e.Time));
+        return $"{times} ({s.Schedules.Count} slots)";
+    }
+
+    private static string FormatSlotLabel(SettingsModel.ScheduleEntry e)
+    {
+        string modeText = e.Mode switch
         {
             "adaptive" => "Adaptive",
             "80"       => "80%",
-            "100" when s.ScheduleDuration == "1week" => "100% 1w",
-            "100" when s.ScheduleDuration == "1day"  => "100% 1d",
+            "100" when e.Duration == "1week" => "100% 1w",
+            "100" when e.Duration == "1day"  => "100% 1d",
             "100"      => "100%",
             "oneshot"  => "100% override",
-            _          => s.ScheduleMode!
+            _          => e.Mode
         };
-        return $"{s.ScheduleTime} — {modeText}";  // em-dash separator
+        return $"{e.Time} — {modeText}";  // em-dash separator
     }
 
     // ---- Hotkeys -------------------------------------------------------
