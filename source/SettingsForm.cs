@@ -52,16 +52,29 @@ internal class SettingsForm : Form
     };
 
     // ---- Schedule controls (live in the Schedule tab) ------------------
-    private ComboBox _scheduleMode    = null!;
-    private ComboBox _scheduleDuration = null!;
-    private Label    _scheduleDurationLabel = null!;
-    // Two dropdowns instead of a TextBox: prevents user error on bad
-    // HH:MM input. -1 (no selection) on either combo = "schedule cleared".
-    private ComboBox _scheduleHour    = null!;
-    private ComboBox _scheduleMinute  = null!;
-    private Label    _scheduleStatus  = null!;
-    private RadioButton _autoExitStay = null!;
-    private RadioButton _autoExitYes  = null!;
+    //
+    // v1.4.0 multi-slot: up to 3 schedule rows, each with its own mode /
+    // duration / time. Slot 0 is permanent (no Remove button); slots 1-2
+    // are added via "Add schedule" and removable. Each row's controls are
+    // bundled in a ScheduleSlotRow so we can add/remove dynamically.
+    private sealed class ScheduleSlotRow
+    {
+        public FlowLayoutPanel Container = null!;
+        public ComboBox Mode          = null!;
+        public Label    DurationLabel = null!;
+        public ComboBox Duration      = null!;
+        public ComboBox Hour          = null!;
+        public ComboBox Minute        = null!;
+        public Button?  Remove        = null;   // null for slot 0 (permanent)
+    }
+    private readonly List<ScheduleSlotRow> _slotRows = new();
+    private FlowLayoutPanel _slotsContainer = null!;
+    private Button _addSlotBtn = null!;
+    private Label  _scheduleStatus = null!;
+    // 3-radio auto-exit (v1.4.0). Replaces the v1.3.x 2-radio Stay/Exit.
+    private RadioButton _autoExitStay  = null!;   // Stay
+    private RadioButton _autoExitFirst = null!;   // AfterFirst
+    private RadioButton _autoExitAll   = null!;   // AfterAll
     private Row      _scheduleHotkeyRow = null!;
 
     public SettingsForm(SettingsModel model, bool openOnScheduleTab = false)
@@ -128,20 +141,72 @@ internal class SettingsForm : Form
             Padding = new Padding(0, 16, 0, 0)
         };
 
-        var btnPanel = new FlowLayoutPanel
+        // v1.4.0 layout: TableLayoutPanel with two columns so we can keep
+        // Save/Cancel left-aligned (existing v1.3.x convention) and place
+        // the new Export/Import settings links far right. AutoSize on the
+        // left column, Percent fill on the right (which anchors the link
+        // group to the right edge).
+        var btnPanel = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            RowCount = 1,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            Margin = new Padding(0, 0, 0, 12)
+        };
+        btnPanel.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        btnPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+        btnPanel.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+        var leftButtons = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.LeftToRight,
             AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Margin = new Padding(0, 0, 0, 12)
+            Margin = new Padding(0)
         };
         _btnSave      = new Button { Text = "Save",   Size = new Size(110, 36), Margin = new Padding(0, 0, 12, 0) };
         var btnCancel = new Button { Text = "Cancel", Size = new Size(110, 36) };
         _btnSave.Click  += (_, _) => SaveAndClose();
         btnCancel.Click += (_, _) => Close();
-        btnPanel.Controls.Add(_btnSave);
-        btnPanel.Controls.Add(btnCancel);
+        leftButtons.Controls.Add(_btnSave);
+        leftButtons.Controls.Add(btnCancel);
         AcceptButton = _btnSave;
         CancelButton = btnCancel;
+        btnPanel.Controls.Add(leftButtons, 0, 0);
+
+        // Right side: Export / Import settings as LinkLabels. RightToLeft
+        // flow keeps Import on the far right (most-likely-clicked at the
+        // top-right of the link group, mirroring the existing ko-fi/github
+        // links convention).
+        var rightLinks = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.RightToLeft,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Anchor = AnchorStyles.Right | AnchorStyles.Top | AnchorStyles.Bottom,
+            Margin = new Padding(0)
+        };
+        var lnkImport = new LinkLabel
+        {
+            Text = "Import settings",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(12, 10, 0, 10)
+        };
+        var lnkExport = new LinkLabel
+        {
+            Text = "Export settings",
+            AutoSize = true,
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(12, 10, 0, 10)
+        };
+        lnkImport.LinkClicked += (_, _) => DoImportSettings();
+        lnkExport.LinkClicked += (_, _) => DoExportSettings();
+        // RightToLeft: Import appears further right than Export
+        rightLinks.Controls.Add(lnkImport);
+        rightLinks.Controls.Add(lnkExport);
+        btnPanel.Controls.Add(rightLinks, 1, 0);
+
         footer.Controls.Add(btnPanel);
 
         var linksRow = new FlowLayoutPanel
@@ -404,149 +469,58 @@ internal class SettingsForm : Form
             Margin = new Padding(0, 0, 0, 18)
         });
 
-        // ---- Fire spec (mode + duration + time) ----
+        // ---- Fire spec — up to 3 schedule slots (v1.4.0) ----
         root.Controls.Add(MakeSectionLabel("When to fire"));
+        root.Controls.Add(new Label
+        {
+            Text = $"Add up to {SettingsModel.MaxScheduleSlots} scheduled mode changes. "
+                 + "Each fires at its own time during one simulated-sleep run.",
+            AutoSize = true, MaximumSize = new Size(820, 0),
+            ForeColor = SystemColors.GrayText, Tag = "gray",
+            Margin = new Padding(0, 0, 0, 8)
+        });
 
-        var fireGrid = new TableLayoutPanel
+        // Vertical container that holds the dynamic slot rows.
+        _slotsContainer = new FlowLayoutPanel
         {
-            ColumnCount = 4, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Margin = new Padding(0, 4, 0, 16)
-        };
-        // Col 0: label.  Col 1: input control (mode dropdown / time TextBox).
-        // Col 2: duration label OR Clear button — widened to 140 so the
-        // Clear button + its right-margin fit without clipping.
-        // Col 3: duration dropdown / status text.
-        fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));
-        fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 220));
-        fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140));
-        fireGrid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-
-        // Mode row — variant-aware. Variant A: dropdown of all four
-        // choices ((none) / Adaptive / 80% / 100%). Variant B: dropdown
-        // is locked to a single 'Charge to 100% (one-shot override)'
-        // entry, since the device only exposes that one action. Either
-        // way the control is the same _scheduleMode ComboBox so the
-        // existing save/load plumbing keeps working without forking.
-        fireGrid.Controls.Add(MakeFieldLabel("Charging mode:"), 0, 0);
-        _scheduleMode = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 220, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6)
-        };
-        if (_variant == SurfaceUiVariant.B)
-        {
-            _scheduleMode.Items.AddRange(new object[]
-            {
-                "(none)", "Charge to 100% (one-shot)"
-            });
-        }
-        else
-        {
-            _scheduleMode.Items.AddRange(new object[]
-            {
-                "(none)", "Adaptive", "Limit to 80%", "Charge to 100%"
-            });
-        }
-        _scheduleMode.SelectedIndexChanged += (_, _) => UpdateDurationVisibility();
-        fireGrid.Controls.Add(_scheduleMode, 1, 0);
-
-        // Duration label + dropdown (variant A only — variant B's one-shot
-        // doesn't have a duration concept; the button is fire-and-forget
-        // for a single charge cycle). Created in both variants to keep
-        // the field references non-null for theming + visibility toggling,
-        // but Visible=false on B.
-        _scheduleDurationLabel = MakeFieldLabel("Duration:");
-        fireGrid.Controls.Add(_scheduleDurationLabel, 2, 0);
-        _scheduleDuration = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 130, Anchor = AnchorStyles.Left, Margin = new Padding(0, 6, 0, 6)
-        };
-        _scheduleDuration.Items.AddRange(new object[] { "1 day", "1 week" });
-        fireGrid.Controls.Add(_scheduleDuration, 3, 0);
-
-        // Time row: HH ComboBox + ":" + MM ComboBox in a small flow panel.
-        // Dropdowns prevent the user from typing an invalid time.
-        fireGrid.Controls.Add(MakeFieldLabel("Scheduled time (HH:MM):"), 0, 1);
-
-        var timePanel = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
+            FlowDirection = FlowDirection.TopDown,
             AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Anchor = AnchorStyles.Left, Margin = new Padding(0, 4, 0, 4),
-            WrapContents = false
+            WrapContents = false, Margin = new Padding(0, 0, 0, 4)
         };
-        _scheduleHour = new ComboBox
-        {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 64, Margin = new Padding(0, 2, 6, 2)
-        };
-        for (int h = 0; h < 24; h++) _scheduleHour.Items.Add(h.ToString("00"));
-        _scheduleHour.SelectedIndexChanged += (_, _) =>
-        {
-            // Auto-fill minute to 00 when hour is picked without a minute —
-            // most overnight schedules land on the hour, and this means the
-            // user only has to make one pick instead of two for the common
-            // case. They can still change minute afterward.
-            if (_scheduleHour.SelectedIndex >= 0 && _scheduleMinute.SelectedIndex < 0)
-                _scheduleMinute.SelectedIndex = 0;
-            UpdateScheduleStatus();
-        };
+        root.Controls.Add(_slotsContainer);
 
-        _scheduleMinute = new ComboBox
+        // "Add schedule" button — disabled at the slot cap.
+        _addSlotBtn = new Button
         {
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            Width = 64, Margin = new Padding(0, 2, 0, 2)
+            Text = "+ Add schedule",
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 2, 0, 16),
+            Padding = new Padding(8, 4, 8, 4)
         };
-        for (int m = 0; m < 60; m++) _scheduleMinute.Items.Add(m.ToString("00"));
-        _scheduleMinute.SelectedIndexChanged += (_, _) => UpdateScheduleStatus();
-
-        var colon = new Label
+        _addSlotBtn.Click += (_, _) =>
         {
-            Text = ":", AutoSize = true,
-            Font = new Font("Segoe UI", 11f, FontStyle.Bold),
-            Margin = new Padding(0, 6, 6, 0)
+            if (_slotRows.Count < SettingsModel.MaxScheduleSlots)
+            {
+                AddSlotRow(removable: true);
+                RefreshAddButtonState();
+                ApplyTheme();   // theme the freshly-added controls (no-op in light mode)
+                UpdateScheduleStatus();
+            }
         };
+        root.Controls.Add(_addSlotBtn);
 
-        timePanel.Controls.Add(_scheduleHour);
-        timePanel.Controls.Add(colon);
-        timePanel.Controls.Add(_scheduleMinute);
-        fireGrid.Controls.Add(timePanel, 1, 1);
-
-        // Clear is a text link (underlined blue) — cleaner than a button,
-        // also dodges the spacing issue from the previous Button-in-fixed-
-        // -column layout.
-        var clearLink = new LinkLabel
-        {
-            Text = "Clear",
-            AutoSize = true,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(0, 12, 0, 0),
-            LinkBehavior = LinkBehavior.AlwaysUnderline
-        };
-        clearLink.LinkClicked += (_, _) =>
-        {
-            _scheduleHour.SelectedIndex = -1;
-            _scheduleMinute.SelectedIndex = -1;
-            UpdateScheduleStatus();
-        };
-        fireGrid.Controls.Add(clearLink, 2, 1);
-
-        // No "gray" tag here — UpdateScheduleStatus drives ForeColor dynamically
-        // (gray for normal states, red for the "please pick a valid time" hint).
-        // Tagging it "gray" would let the theme Recolor overwrite our red on
-        // every Shown / theme change.
+        // Shared validation/status line for all slots. No "gray" tag —
+        // UpdateScheduleStatus drives the color (gray normal / red error)
+        // and a "gray" tag would let theme Recolor overwrite the red.
         _scheduleStatus = new Label
         {
-            AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.None,
-            Margin = new Padding(8, 12, 0, 0),
+            AutoSize = true, MaximumSize = new Size(820, 0),
+            Margin = new Padding(0, 0, 0, 16),
             Tag = "status"
         };
-        fireGrid.Controls.Add(_scheduleStatus, 3, 1);
+        root.Controls.Add(_scheduleStatus);
 
-        root.Controls.Add(fireGrid);
-
-        // ---- After-fire behavior ----
+        // ---- After-fire behavior — 3 options (v1.4.0) ----
         root.Controls.Add(MakeSectionLabel("After the fire"));
 
         _autoExitStay = new RadioButton
@@ -554,13 +528,19 @@ internal class SettingsForm : Form
             Text = "Stay in simulated sleep — the screen stays black until I dismiss it.",
             AutoSize = true, Margin = new Padding(0, 6, 0, 4)
         };
-        _autoExitYes = new RadioButton
+        _autoExitFirst = new RadioButton
         {
-            Text = "Exit simulated sleep and allow the device's real Sleep / Screen-off timeouts to take over.",
+            Text = "Exit after the first scheduled change fires (then allow real Sleep / Screen-off).",
+            AutoSize = true, Margin = new Padding(0, 0, 0, 4)
+        };
+        _autoExitAll = new RadioButton
+        {
+            Text = "Exit only after all scheduled changes have fired.",
             AutoSize = true, Margin = new Padding(0, 0, 0, 16)
         };
         root.Controls.Add(_autoExitStay);
-        root.Controls.Add(_autoExitYes);
+        root.Controls.Add(_autoExitFirst);
+        root.Controls.Add(_autoExitAll);
 
         // ---- Schedule-toggle hotkey (lives here so it's one feature) ----
         root.Controls.Add(MakeSectionLabel("Toggle hotkey"));
@@ -586,86 +566,201 @@ internal class SettingsForm : Form
         scroll.Controls.Add(root);
         tab.Controls.Add(scroll);
 
-        // ---- Populate from model ----
-        // Variant B has its own two-entry dropdown: index 0 = "(none)",
-        // index 1 = "oneshot". Variant A keeps the v1.2.x four-entry
-        // mapping ((none) / Adaptive / 80% / 100%).
-        if (_variant == SurfaceUiVariant.B)
+        // ---- Populate slot rows from model ----
+        // Build one row per saved schedule (slot 0 permanent, rest removable).
+        // Always show at least one row so the tab isn't empty.
+        _slotsContainer.Controls.Clear();
+        _slotRows.Clear();
+        if (_model.Schedules.Count == 0)
         {
-            _scheduleMode.SelectedIndex = _model.ScheduleMode == "oneshot" ? 1 : 0;
+            AddSlotRow(removable: false);  // empty permanent slot 0
         }
         else
         {
-            switch (_model.ScheduleMode)
-            {
-                case "adaptive": _scheduleMode.SelectedIndex = 1; break;
-                case "80":       _scheduleMode.SelectedIndex = 2; break;
-                case "100":      _scheduleMode.SelectedIndex = 3; break;
-                default:         _scheduleMode.SelectedIndex = 0; break;
-            }
+            for (int i = 0; i < _model.Schedules.Count && i < SettingsModel.MaxScheduleSlots; i++)
+                AddSlotRow(removable: i > 0, initial: _model.Schedules[i]);
         }
-        _scheduleDuration.SelectedIndex = _model.ScheduleDuration == "1week" ? 1 : 0;
+        RefreshAddButtonState();
 
-        // Populate hour/minute dropdowns from saved "HH:MM" string.
-        if (!string.IsNullOrEmpty(_model.ScheduleTime)
-            && TryParseTime(_model.ScheduleTime!, out int hh, out int mm))
-        {
-            _scheduleHour.SelectedIndex   = hh;
-            _scheduleMinute.SelectedIndex = mm;
-        }
-        else
-        {
-            _scheduleHour.SelectedIndex   = -1;
-            _scheduleMinute.SelectedIndex = -1;
-        }
-
-        _autoExitYes.Checked  = _model.ScheduleAutoExit;
-        _autoExitStay.Checked = !_model.ScheduleAutoExit;
-        UpdateDurationVisibility();
+        // Map the exit-mode enum onto the three radios.
+        _autoExitStay.Checked  = _model.ScheduleAutoExit == SettingsModel.ScheduleExitMode.Stay;
+        _autoExitFirst.Checked = _model.ScheduleAutoExit == SettingsModel.ScheduleExitMode.AfterFirst;
+        _autoExitAll.Checked   = _model.ScheduleAutoExit == SettingsModel.ScheduleExitMode.AfterAll;
         UpdateScheduleStatus();
     }
 
-    private void UpdateDurationVisibility()
+    // ---- Slot-row management (v1.4.0 multi-slot) -----------------------
+
+    private void AddSlotRow(bool removable, SettingsModel.ScheduleEntry? initial = null)
     {
-        // Duration is variant-A-only: the 1-day vs 1-week distinction lives
-        // in the Surface app's radio UI alongside the 100% mode. Variant B
-        // has no equivalent concept (one-shot is fire-and-forget for one
-        // charge cycle), so the duration row is always hidden there.
-        bool is100 = _variant == SurfaceUiVariant.A && _scheduleMode.SelectedIndex == 3;
-        _scheduleDurationLabel.Visible = is100;
-        _scheduleDuration.Visible      = is100;
+        var slot = new ScheduleSlotRow();
+        var row = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false, Margin = new Padding(0, 2, 0, 2)
+        };
+        slot.Container = row;
+
+        // Mode dropdown (variant-aware).
+        slot.Mode = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 190, Margin = new Padding(0, 2, 8, 2)
+        };
+        if (_variant == SurfaceUiVariant.B)
+            slot.Mode.Items.AddRange(new object[] { "(none)", "Charge to 100% (one-shot)" });
+        else
+            slot.Mode.Items.AddRange(new object[] { "(none)", "Adaptive", "Limit to 80%", "Charge to 100%" });
+        slot.Mode.SelectedIndexChanged += (_, _) => { UpdateSlotDurationVisibility(slot); UpdateScheduleStatus(); };
+        row.Controls.Add(slot.Mode);
+
+        // Duration (variant A, only shown for "Charge to 100%").
+        slot.DurationLabel = new Label { Text = "for", AutoSize = true, Margin = new Padding(0, 6, 6, 0) };
+        row.Controls.Add(slot.DurationLabel);
+        slot.Duration = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 90, Margin = new Padding(0, 2, 8, 2)
+        };
+        slot.Duration.Items.AddRange(new object[] { "1 day", "1 week" });
+        slot.Duration.SelectedIndex = 0;
+        row.Controls.Add(slot.Duration);
+
+        // "at" + HH : MM.
+        row.Controls.Add(new Label { Text = "at", AutoSize = true, Margin = new Padding(0, 6, 6, 0) });
+        slot.Hour = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 58, Margin = new Padding(0, 2, 4, 2) };
+        for (int h = 0; h < 24; h++) slot.Hour.Items.Add(h.ToString("00"));
+        slot.Hour.SelectedIndexChanged += (_, _) =>
+        {
+            if (slot.Hour.SelectedIndex >= 0 && slot.Minute.SelectedIndex < 0) slot.Minute.SelectedIndex = 0;
+            UpdateScheduleStatus();
+        };
+        row.Controls.Add(slot.Hour);
+        row.Controls.Add(new Label { Text = ":", AutoSize = true, Font = new Font("Segoe UI", 11f, FontStyle.Bold), Margin = new Padding(0, 4, 4, 0) });
+        slot.Minute = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 58, Margin = new Padding(0, 2, 8, 2) };
+        for (int m = 0; m < 60; m++) slot.Minute.Items.Add(m.ToString("00"));
+        slot.Minute.SelectedIndexChanged += (_, _) => UpdateScheduleStatus();
+        row.Controls.Add(slot.Minute);
+
+        // Remove button (removable rows only).
+        if (removable)
+        {
+            slot.Remove = new Button { Text = "Remove", AutoSize = true, Margin = new Padding(0, 2, 0, 2), Padding = new Padding(4, 2, 4, 2) };
+            slot.Remove.Click += (_, _) => RemoveSlotRow(slot);
+            row.Controls.Add(slot.Remove);
+        }
+
+        // Apply initial values (or default to "(none)").
+        if (initial != null)
+        {
+            SetSlotMode(slot, initial.Mode);
+            slot.Duration.SelectedIndex = initial.Duration == "1week" ? 1 : 0;
+            if (TryParseTime(initial.Time, out int hh, out int mm))
+            {
+                slot.Hour.SelectedIndex   = hh;
+                slot.Minute.SelectedIndex = mm;
+            }
+        }
+        else
+        {
+            slot.Mode.SelectedIndex   = 0;   // (none)
+            slot.Hour.SelectedIndex   = -1;
+            slot.Minute.SelectedIndex = -1;
+        }
+
+        _slotRows.Add(slot);
+        _slotsContainer.Controls.Add(row);
+        UpdateSlotDurationVisibility(slot);
+    }
+
+    private void RemoveSlotRow(ScheduleSlotRow slot)
+    {
+        _slotRows.Remove(slot);
+        _slotsContainer.Controls.Remove(slot.Container);
+        slot.Container.Dispose();
+        RefreshAddButtonState();
+        UpdateScheduleStatus();
+    }
+
+    private void RefreshAddButtonState()
+    {
+        _addSlotBtn.Enabled = _slotRows.Count < SettingsModel.MaxScheduleSlots;
+    }
+
+    /// <summary>Maps a mode string to the slot's Mode dropdown index.</summary>
+    private void SetSlotMode(ScheduleSlotRow slot, string? mode)
+    {
+        if (_variant == SurfaceUiVariant.B)
+        {
+            slot.Mode.SelectedIndex = mode == "oneshot" ? 1 : 0;
+        }
+        else
+        {
+            slot.Mode.SelectedIndex = mode switch
+            {
+                "adaptive" => 1,
+                "80"       => 2,
+                "100"      => 3,
+                _          => 0
+            };
+        }
+    }
+
+    /// <summary>Reads a slot's Mode dropdown into a mode string (null = none).</summary>
+    private string? SlotModeString(ScheduleSlotRow slot)
+    {
+        if (_variant == SurfaceUiVariant.B)
+            return slot.Mode.SelectedIndex == 1 ? "oneshot" : null;
+        return slot.Mode.SelectedIndex switch
+        {
+            1 => "adaptive",
+            2 => "80",
+            3 => "100",
+            _ => null
+        };
+    }
+
+    private void UpdateSlotDurationVisibility(ScheduleSlotRow slot)
+    {
+        // Duration only applies to variant A "Charge to 100%".
+        bool is100 = _variant == SurfaceUiVariant.A && slot.Mode.SelectedIndex == 3;
+        slot.DurationLabel.Visible = is100;
+        slot.Duration.Visible      = is100;
     }
 
     private void UpdateScheduleStatus()
     {
-        int hh = _scheduleHour.SelectedIndex;
-        int mm = _scheduleMinute.SelectedIndex;
-
         bool dark = DarkMode.IsAppsDarkMode();
         Color grayFg  = dark ? Color.FromArgb(0xBB, 0xBB, 0xBB) : SystemColors.GrayText;
-        // Dark mode uses a softer red so it doesn't strain against the dark bg.
         Color errorFg = dark ? Color.FromArgb(0xF0, 0x70, 0x70) : Color.FromArgb(0xC0, 0x2A, 0x2A);
 
-        if (hh < 0 && mm < 0)
+        // Validate each slot: a slot with a mode must have a complete time,
+        // and vice versa. Half-set slots block Save.
+        int activeCount = 0;
+        for (int i = 0; i < _slotRows.Count; i++)
         {
-            _scheduleStatus.Text      = "(not set — hotkey enters simulated sleep without a fire)";
-            _scheduleStatus.ForeColor = grayFg;
-            if (_btnSave != null) _btnSave.Enabled = true;
+            var slot = _slotRows[i];
+            bool hasMode = SlotModeString(slot) != null;
+            bool hasTime = slot.Hour.SelectedIndex >= 0 && slot.Minute.SelectedIndex >= 0;
+            bool partialTime = (slot.Hour.SelectedIndex >= 0) != (slot.Minute.SelectedIndex >= 0);
+
+            if (partialTime || (hasMode != hasTime))
+            {
+                _scheduleStatus.Text      = $"Slot {i + 1}: pick both a charging mode and a complete time (or leave both empty).";
+                _scheduleStatus.ForeColor = errorFg;
+                if (_btnSave != null) _btnSave.Enabled = false;
+                return;
+            }
+            if (hasMode && hasTime) activeCount++;
         }
-        else if (hh < 0 || mm < 0)
-        {
-            _scheduleStatus.Text      = "Please pick a valid time.";
-            _scheduleStatus.ForeColor = errorFg;
-            // Disable Save so the invalid state can't be committed — no dialog,
-            // user just can't proceed until they fix the field.
-            if (_btnSave != null) _btnSave.Enabled = false;
-        }
+
+        if (activeCount == 0)
+            _scheduleStatus.Text = "(no schedule set — hotkey enters simulated sleep without a fire)";
         else
-        {
-            _scheduleStatus.Text      = $"will fire at {hh:00}:{mm:00}";
-            _scheduleStatus.ForeColor = grayFg;
-            if (_btnSave != null) _btnSave.Enabled = true;
-        }
+            _scheduleStatus.Text = activeCount == 1 ? "1 scheduled change armed." : $"{activeCount} scheduled changes armed.";
+        _scheduleStatus.ForeColor = grayFg;
+        if (_btnSave != null) _btnSave.Enabled = true;
     }
 
     private static bool TryParseTime(string s, out int hh, out int mm)
@@ -786,16 +881,117 @@ internal class SettingsForm : Form
 
     // ---- Save ----------------------------------------------------------
 
+    // ---- Export / Import settings (v1.4.0) ----------------------------
+
+    /// <summary>
+    /// Save the live settings.ini (Paths.Settings) to a user-chosen location.
+    /// Uses a SaveFileDialog with a sensible default filename. No dialog
+    /// on success — just a brief tray-style MessageBox so the user knows.
+    /// </summary>
+    private void DoExportSettings()
+    {
+        try
+        {
+            using var dlg = new SaveFileDialog
+            {
+                Title    = "Export Surface Charging Tray settings",
+                Filter   = "INI settings (*.ini)|*.ini|All files (*.*)|*.*",
+                FileName = $"surface-charging-tray-settings-{DateTime.Now:yyyy-MM-dd}.ini",
+                OverwritePrompt = true
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            // If the user hasn't saved yet during this session, the on-disk
+            // settings.ini may be stale relative to _model. Save it first so
+            // the exported file reflects the dialog's current state.
+            _model.Save();
+            if (System.IO.File.Exists(Paths.Settings))
+            {
+                System.IO.File.Copy(Paths.Settings, dlg.FileName, overwrite: true);
+            }
+            else
+            {
+                // Edge case: Save() wrote no file because all fields are at
+                // defaults. Write an empty marker so the user gets something.
+                System.IO.File.WriteAllText(dlg.FileName, "; Surface Charging Tray settings (defaults)\n");
+            }
+            MessageBox.Show(this,
+                $"Settings exported to:\n{dlg.FileName}",
+                "Export complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Couldn't export settings:\n{ex.Message}",
+                "Export failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    /// <summary>
+    /// Load settings from a user-chosen file, replacing the current
+    /// in-memory model and refreshing every form field. Saves to disk on
+    /// import so the tray's reload picks it up. Backs up the current
+    /// settings.ini to a .bak file so a botched import isn't catastrophic.
+    /// </summary>
+    private void DoImportSettings()
+    {
+        try
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Title  = "Import Surface Charging Tray settings",
+                Filter = "INI settings (*.ini)|*.ini|All files (*.*)|*.*",
+                Multiselect = false,
+                CheckFileExists = true
+            };
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+            // Confirm before replacing — destructive operation.
+            var confirm = MessageBox.Show(this,
+                "Importing settings will replace your current Surface Charging Tray " +
+                "settings (hotkeys, schedule, etc.) with the contents of:\n\n" +
+                dlg.FileName + "\n\n" +
+                "Your current settings will be backed up to settings.ini.bak. Continue?",
+                "Confirm import",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            if (confirm != DialogResult.Yes) return;
+
+            // Backup existing settings.ini before overwriting.
+            if (System.IO.File.Exists(Paths.Settings))
+            {
+                var bak = Paths.Settings + ".bak";
+                try { System.IO.File.Copy(Paths.Settings, bak, overwrite: true); }
+                catch { /* backup is best-effort */ }
+            }
+
+            // Overwrite the live settings file and re-read to validate it
+            // parses cleanly. If Load returns essentially-default values
+            // (no hotkeys overridden, no cache), warn the user.
+            System.IO.File.Copy(dlg.FileName, Paths.Settings, overwrite: true);
+
+            MessageBox.Show(this,
+                "Settings imported. The dialog will close — reopen it to see " +
+                "the imported values, and the tray menu will refresh.",
+                "Import complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+            // Trigger the Saved callback so TrayAppContext reloads its
+            // _settings + applies any tray-visible changes, then close.
+            // Skip our normal SaveAndClose validation — the file we just
+            // imported is the source of truth, not the dialog's state.
+            Saved?.Invoke();
+            Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Couldn't import settings:\n{ex.Message}\n\n" +
+                "Your previous settings are still in place.",
+                "Import failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
     private void SaveAndClose()
     {
-        // Defensive: should be unreachable — Save button is disabled when
-        // exactly one of hour/minute is set. No dialog (inline status handles
-        // notification); silently bail so we never persist a half-set time.
-        int hh = _scheduleHour.SelectedIndex;
-        int mm = _scheduleMinute.SelectedIndex;
-        if ((hh < 0) != (mm < 0)) return;
-        string? timeText = (hh >= 0 && mm >= 0) ? $"{hh:00}:{mm:00}" : null;
-
         // Hotkey rows (both tabs)
         foreach (var r in _rows)
         {
@@ -812,33 +1008,36 @@ internal class SettingsForm : Form
             }
         }
 
-        // Schedule fields — variant-aware. Variant B's dropdown has only
-        // two entries ((none) / oneshot); we serialize that as
-        // ScheduleMode='oneshot' (no Duration). Variant A keeps the
-        // v1.2.x mapping.
-        if (_variant == SurfaceUiVariant.B)
+        // Schedule — collect every active slot row into the model's list.
+        // A slot is active when it has both a mode and a complete time;
+        // half-set rows are skipped (UpdateScheduleStatus blocks Save on
+        // those anyway). Duration only applies to variant A "100".
+        _model.Schedules.Clear();
+        foreach (var slot in _slotRows)
         {
-            _model.ScheduleMode     = _scheduleMode.SelectedIndex == 1 ? "oneshot" : null;
-            _model.ScheduleDuration = null;
-        }
-        else
-        {
-            switch (_scheduleMode.SelectedIndex)
+            var mode = SlotModeString(slot);
+            if (string.IsNullOrEmpty(mode)) continue;
+            if (slot.Hour.SelectedIndex < 0 || slot.Minute.SelectedIndex < 0) continue;
+
+            string? duration = (mode == "100")
+                ? (slot.Duration.SelectedIndex == 1 ? "1week" : "1day")
+                : null;
+            string time = $"{slot.Hour.SelectedIndex:00}:{slot.Minute.SelectedIndex:00}";
+
+            _model.Schedules.Add(new SettingsModel.ScheduleEntry
             {
-                case 1: _model.ScheduleMode = "adaptive"; _model.ScheduleDuration = null; break;
-                case 2: _model.ScheduleMode = "80";       _model.ScheduleDuration = null; break;
-                case 3:
-                    _model.ScheduleMode = "100";
-                    _model.ScheduleDuration = _scheduleDuration.SelectedIndex == 1 ? "1week" : "1day";
-                    break;
-                default:
-                    _model.ScheduleMode = null;
-                    _model.ScheduleDuration = null;
-                    break;
-            }
+                Mode     = mode!,
+                Duration = duration,
+                Time     = time
+            });
+            if (_model.Schedules.Count >= SettingsModel.MaxScheduleSlots) break;
         }
-        _model.ScheduleTime     = timeText;
-        _model.ScheduleAutoExit = _autoExitYes.Checked;
+
+        // Map the three radios onto the exit-mode enum.
+        _model.ScheduleAutoExit =
+            _autoExitAll.Checked   ? SettingsModel.ScheduleExitMode.AfterAll  :
+            _autoExitFirst.Checked ? SettingsModel.ScheduleExitMode.AfterFirst :
+                                     SettingsModel.ScheduleExitMode.Stay;
 
         // "Run at Windows login" — apply the registry change directly.
         // (AutoStart state is read from / written to the user's Run key, not

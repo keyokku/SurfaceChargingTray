@@ -5,6 +5,83 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.4.0 — 2026-05-21
+
+Feature release: quality-of-life additions that complement the core
+charging-mode control, plus multi-slot scheduling. No changes to the
+variant-detection or charging-mode mechanisms — all existing behavior is
+preserved and backward-compatible with v1.3.x settings.
+
+### Multi-slot scheduler
+
+The overnight charging-mode scheduler now supports **up to 3 schedule
+slots** in a single simulated-sleep run, each with its own mode + time.
+Example: flip to 100% at 06:00 and back to 80% at 09:00, all in one go.
+
+- Settings → Schedule: dynamic slot rows with an **+ Add schedule** button
+  (capped at 3) and per-row **Remove**.
+- New **3-option auto-exit** (replaces the old 2-option):
+  *Stay in simulated sleep* / *Exit after the first change fires* /
+  *Exit only after all changes have fired*.
+- Existing single-slot schedules migrate automatically to slot 0; the old
+  `auto_exit=1/0` maps to *after-first* / *stay*.
+- Fires run in chronological order; each re-arms relative to entry time so
+  a slow mode-switch doesn't push later fires late.
+
+### Battery health at a glance
+
+- New **Battery health** item in the tray menu (below Windows Power mode):
+  shows retention % + cycle count, with full detail (capacity, design,
+  chemistry) on hover. Cached 24h; click to force a fresh read.
+- Tooltip notes that capacity is a fluctuating estimate — watch the trend,
+  not a single reading.
+
+### Tray icon mode badge
+
+- The tray icon now carries a small colored corner badge indicating the
+  active charging state: **green** (Smart Charging / Adaptive), **blue**
+  (Limit to 80%), **orange** (Charge to 100%). Plug icon stays the
+  dominant glyph.
+
+### Tray tooltip
+
+- Tray-icon hover now shows the current **Windows Power mode** on a second
+  line (e.g. "Power mode: Best power efficiency").
+
+### Update checker
+
+- On launch (throttled to once/24h), the app checks GitHub Releases and
+  shows a balloon if a newer version is available — click to open the
+  releases page. Silent on failure; no auto-install.
+
+### Battery calibration reminder
+
+- If the battery hasn't reached 100% in 30 days (common on Smart-Charging-
+  80%), a one-time midday reminder suggests a full charge cycle to keep the
+  fuel gauge accurate. Opt-in by nature — only fires when the condition is met.
+
+### Error dialog improvements
+
+- "Show last error" now includes a scrollable view of recent
+  `surface-error.log` entries, plus **Copy log to clipboard** and **Open
+  GitHub issues** text links. Larger, resizable dialog. Stronger color
+  contrast (Material Red error text, GitHub-blue links).
+
+### Settings export / import
+
+- Settings dialog now has **Export settings** / **Import settings** text
+  links (bottom-right). Export writes a timestamped `.ini`; import backs up
+  the current settings to `.bak` first.
+
+### Notes
+
+- All new background work is event- or launch-driven or rides the existing
+  5-min trim timer — no new continuous polling (consistent with the v1.3.1
+  power-safety principle).
+- Light mode is untouched by the dark-mode-only theming paths.
+
+---
+
 ## v1.3.1 — 2026-05-17
 
 Safety + polish release on top of v1.3.0. No functional regressions; same
