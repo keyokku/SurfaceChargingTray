@@ -1,6 +1,6 @@
 # Surface Charging Tray
 
-## Major Update: v1.4.0 is out which includes lots of new features + still supports most old/new Surface UI
+## Major Update: v1.4.1 is out which includes lots of new features + still supports most old/new Surface UI
 
 <video src="https://github.com/keyokku/SurfaceChargingTray/releases/download/v1.2.2/SurfaceChargingTrayv122demo.mp4" controls width="720"></video>
 
