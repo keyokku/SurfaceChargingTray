@@ -61,7 +61,7 @@ All releases are kept available so you can pin to whichever you prefer.
 
 | Version | Released | Highlights |
 |---|---|---|
-| **[v1.4.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.4.0)** *(latest)* | 2026-05-21 | Feature release. **Multi-slot scheduler** — up to 3 timed charging-mode changes in one simulated-sleep run, with a 3-option auto-exit. **Battery health** in the tray menu (retention %, cycles, capacity). **Color-coded tray badge** for the active mode. Tray tooltip shows current Windows Power mode. **Update checker**, **battery calibration reminder**, **error-log viewer** in the Show-last-error dialog, and **export/import settings**. Backward-compatible with v1.3.x settings. |
+| **[v1.4.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.4.1)** *(latest)* | 2026-05-23 | Feature release. **Multi-slot scheduler** — up to 3 timed charging-mode changes in one simulated-sleep run, with a 3-option auto-exit. **Battery health** in the tray menu (retention %, cycles, capacity). **Color-coded tray badge** for the active mode. Tray tooltip shows current Windows Power mode. **Update checker**, **battery calibration reminder**, **error-log viewer** in the Show-last-error dialog, and **export/import settings**. Includes a multi-monitor simulated-sleep dismiss fix. Backward-compatible with v1.3.x settings. |
 | <sub>[v1.3.1](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.1)</sub> | <sub>2026-05-17</sub> | <sub>Safety + polish release on top of v1.3.0. Adds fake-sleep watchdogs (AC-health, AC-disconnect, low-battery floor, duration cap) to bound damage from rare USB-C PD failures during overnight scheduled charging-mode flips. Thorough dark-mode pass on the Settings dialog. "Hotkeys" tab renamed to General. No functional regressions vs v1.3.0.</sub> |
 | <sub>[v1.3.0](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.3.0)</sub> | <sub>2026-05-16</sub> | <sub>Auto-detects two Surface app UI variants and reshapes the tray menu / hotkeys / scheduler around whichever your device supports. Three-mode UI users (most modern Surfaces) get the same experience as v1.2.2. Single-button override UI users (older Surfaces) now get a working *Charge to 100%* override action with live state tracking. Backward-compatible with v1.2.x settings.</sub> |
 | <sub>[v1.2.2](https://github.com/keyokku/SurfaceChargingTray/releases/tag/v1.2.2)</sub> | <sub>2026-05-12</sub> | <sub>Charging-mode scheduler. Press a hotkey before bed; the device enters simulated sleep to change charging mode, then lets the device sleep normally. See [Charging-mode scheduler](#charging-mode-scheduler) below. Adds a separate diagnostic tool download for users whose Surface model isn't detected, plus better error dialog that links. No AHK package — `.exe` builds only.</sub> |
@@ -77,8 +77,8 @@ Latest release on the [Releases](../../releases) tab. Two packages:
 
 | Package | For |
 |---|---|
-| `SurfaceChargingTray-v1.4.0-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
-| `SurfaceChargingTray-v1.4.0-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
+| `SurfaceChargingTray-v1.4.1-arm64.zip` | Snapdragon Surfaces (Pro X / 11 / 12, Laptop 7 Snapdragon) |
+| `SurfaceChargingTray-v1.4.1-x64.zip` | Intel-based Surfaces (most common). Also runs on Snapdragon via Prism emulation. |
 
 Find your CPU at **Settings → System → About → System type**. Unzip, double-click `SurfaceChargingTray.exe`. No install, no admin.
 

@@ -95,9 +95,20 @@ internal static class FakeSleepMode
     private const uint ES_SYSTEM_REQUIRED   = 0x00000001;
     private const uint ES_DISPLAY_REQUIRED  = 0x00000002;
 
+    // Used to detect whether focus moved to ANOTHER of our own overlays
+    // (multi-monitor) vs an external window — so per-monitor overlays don't
+    // fight each other for foreground in an infinite Deactivate->reassert war.
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     // ---- State ---------------------------------------------------------
 
     private static bool _active;
+    // True only while Exit() is tearing down, so the overlay FormClosed
+    // handler can distinguish our own close (do nothing extra) from an
+    // external close (alt-F4 / taskbar) where we must still run Exit() to
+    // restore brightness / power mode / exec-state.
+    private static bool _exiting;
     private static byte? _origBrightness;
     private static PowerMode.Mode? _origPowerMode;
     private static readonly List<Form> _overlays = new();
@@ -401,6 +412,9 @@ internal static class FakeSleepMode
     public static void Exit()
     {
         if (!_active) return;
+        // Mark teardown in progress so overlay FormClosed handlers know this
+        // close is ours (not an external alt-F4) and don't re-enter Exit().
+        _exiting = true;
 
         // Stop the safety watchdog first so its ticks can't race the exit
         // teardown. Idempotent — no-op if watchdog wasn't started.
@@ -468,6 +482,7 @@ internal static class FakeSleepMode
         _origPowerMode  = null;
         _exitMode = SettingsModel.ScheduleExitMode.Stay;
         _active = false;
+        _exiting = false;
     }
 
     // ---- Safety watchdog implementation (Phase 9) ----------------------
@@ -850,18 +865,24 @@ internal static class FakeSleepMode
             // Dismiss on click OR key. Mouse-MOVE intentionally NOT
             // wired — user explicitly asked for this so pen/cat drift
             // doesn't break the "fake sleep" overnight.
-            f.MouseDown    += (_, _) => ExitFromUiThread();
+            f.MouseDown    += (_, _) => { Logger.Error("[INFO] FakeSleep: dismiss via mouse"); ExitFromUiThread(); };
             f.MouseClick   += (_, _) => ExitFromUiThread();
-            f.KeyDown      += (_, _) => ExitFromUiThread();
+            f.KeyDown      += (_, _) => { Logger.Error("[INFO] FakeSleep: dismiss via key"); ExitFromUiThread(); };
             // Reassert topmost if some app steals focus (notifications,
             // background launches). Do NOT auto-dismiss on deactivate —
             // the whole point of fake-sleep is unattended persistence.
             //
-            // The _suppressTopmostReassert gate is critical: while a
-            // scheduled SetMode is running we WANT the Surface app to
-            // hold foreground long enough for UWP to paint its UI tree.
-            // Yanking focus back here would re-trigger the same UWP-defer
-            // behavior that blocks locked-screen scheduled fires.
+            // CRITICAL multi-monitor fix (v1.4.1): only reassert when focus
+            // left ALL of our overlays. Without this check, on 2+ monitors
+            // the overlays fight each other (A activates -> B deactivates ->
+            // B reasserts+activates -> A deactivates -> ...) in an infinite
+            // focus war that saturates the UI thread and makes the overlays
+            // unresponsive to clicks/keys. We defer the check so the new
+            // foreground window has settled, then skip if it's one of ours.
+            //
+            // The _suppressTopmostReassert gate also matters: while a
+            // scheduled SetMode is running we WANT the Surface app to hold
+            // foreground long enough for UWP to paint its UI tree.
             f.Deactivate += (_, _) =>
             {
                 if (_suppressTopmostReassert) return;
@@ -871,6 +892,13 @@ internal static class FakeSleepMode
                     {
                         try
                         {
+                            // If focus moved to another of OUR overlays, do
+                            // nothing — fighting among ourselves is the bug.
+                            var fg = GetForegroundWindow();
+                            foreach (var o in _overlays)
+                            {
+                                if (!o.IsDisposed && o.IsHandleCreated && o.Handle == fg) return;
+                            }
                             f.TopMost = false;
                             f.TopMost = true;
                             f.Activate();
@@ -881,7 +909,19 @@ internal static class FakeSleepMode
                 catch { }
             };
             f.Load       += (_, _) => { try { Cursor.Hide(); } catch { } };
-            f.FormClosed += (_, _) => { try { Cursor.Show(); } catch { } };
+            f.FormClosed += (_, _) =>
+            {
+                try { Cursor.Show(); } catch { }
+                // External close (alt-F4 / taskbar) while still active: run
+                // Exit() so brightness / power mode / exec-state are restored.
+                // During our own HideOverlays teardown, _exiting is true, so
+                // this is a no-op then.
+                if (_active && !_exiting)
+                {
+                    Logger.Error("[INFO] FakeSleep: overlay closed externally — running Exit()");
+                    ExitFromUiThread();
+                }
+            };
             f.Show();
             _overlays.Add(f);
         }

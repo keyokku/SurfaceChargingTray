@@ -5,12 +5,39 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
-## v1.4.0 — 2026-05-21
+## v1.4.1 — 2026-05-23
 
-Feature release: quality-of-life additions that complement the core
-charging-mode control, plus multi-slot scheduling. No changes to the
-variant-detection or charging-mode mechanisms — all existing behavior is
-preserved and backward-compatible with v1.3.x settings.
+Same feature set as the (superseded) v1.4.0 below, plus a critical
+multi-monitor fix. **If you're on v1.4.0, upgrade to this.**
+
+### Bug fix — multi-monitor simulated-sleep dismiss
+
+On systems with **2 or more monitors**, the per-monitor black overlays
+fought each other for foreground: each overlay's "stay on top" handler
+reasserted focus when it lost it, so overlay A activating made overlay B
+reassert, which made A reassert, in an infinite focus-war that saturated
+the UI thread. The overlays became **unresponsive to clicks/keys** — the
+only way out was alt-tab + manually closing the windows (which also left
+brightness/power-mode unrestored).
+
+- The "stay on top" handler now checks `GetForegroundWindow()` and only
+  reasserts when focus left **all** of our overlays — overlays no longer
+  fight among themselves. Manual click/key dismiss works on any number of
+  monitors.
+- If an overlay is closed externally (alt-F4 / taskbar), `Exit()` now runs
+  so brightness, Windows Power mode, and the exec-state lock are restored.
+- Mouse/key dismissals are logged for future diagnostics.
+
+Single-monitor users were unaffected (only one overlay, no war), which is
+why v1.3.x overnight runs worked — the bug only surfaced with the manual-
+dismiss path on multiple displays.
+
+### Feature set (carried from v1.4.0)
+
+Quality-of-life additions that complement the core charging-mode control,
+plus multi-slot scheduling. No changes to the variant-detection or
+charging-mode mechanisms — all existing behavior is preserved and
+backward-compatible with v1.3.x settings.
 
 ### Multi-slot scheduler
 
