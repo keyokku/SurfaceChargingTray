@@ -344,6 +344,10 @@ internal sealed class TrayAppContext : ApplicationContext
         {
             if (!_busy) TrimWorkingSet();
             CheckCalibrationReminder();
+            // Low-battery check runs here too. When it detects we're nearing
+            // the threshold (on battery, within +5%), it spins up a faster
+            // 60s poll for responsiveness, then stands down after firing.
+            EvaluateLowBattery();
         };
         _trimTimer.Start();
 
@@ -1013,6 +1017,90 @@ internal sealed class TrayAppContext : ApplicationContext
         catch { }
     }
 
+    // ---- Low-battery warning (v1.4.2) ----------------------------------
+
+    // Dedicated 60s poll that only runs in the "watch zone" (on battery,
+    // within threshold+5%). Null when not in the zone. Spun up by
+    // EvaluateLowBattery on the 5-min trim tick; torn down after the toast
+    // fires or when we leave the zone / plug in.
+    private System.Windows.Forms.Timer? _lowBatteryFastPoll;
+    // Once-per-discharge-cycle guard. Reset when plugged in or back above
+    // the watch zone, so the user gets exactly one warning per drain.
+    private bool _lowBatteryWarned = false;
+
+    /// <summary>
+    /// Evaluates battery level against the user's low-battery threshold.
+    /// On battery + within threshold+5% -> ramp to 60s polling. At/below
+    /// threshold + not yet warned -> fire the toast once, then stand the
+    /// fast poll back down. Plugged in or above the watch zone -> reset.
+    /// Called from the 5-min trim tick AND from the 60s fast poll.
+    /// </summary>
+    private void EvaluateLowBattery()
+    {
+        try
+        {
+            if (!_settings.LowBatteryWarnEnabled)
+            {
+                StopLowBatteryFastPoll();
+                _lowBatteryWarned = false;
+                return;
+            }
+
+            var ps = SystemInformation.PowerStatus;
+            bool onBattery = ps.PowerLineStatus == PowerLineStatus.Offline;
+            float pf = ps.BatteryLifePercent;
+            if (float.IsNaN(pf) || pf < 0) return;
+            int pct = (int)Math.Round(Math.Min(pf, 1f) * 100);
+
+            int threshold = Math.Clamp(_settings.LowBatteryWarnPct, 1, 99);
+            int watchZone = threshold + 5;
+
+            if (!onBattery || pct > watchZone)
+            {
+                // Plugged in, or comfortably above threshold — normal cadence,
+                // and re-arm the once-per-cycle warning for next discharge.
+                _lowBatteryWarned = false;
+                StopLowBatteryFastPoll();
+                return;
+            }
+
+            // In the watch zone — poll at 60s for responsiveness near the line.
+            StartLowBatteryFastPoll();
+
+            if (pct <= threshold && !_lowBatteryWarned)
+            {
+                _lowBatteryWarned = true;
+                _icon.ShowBalloonTip(10_000,
+                    "Battery low",
+                    $"Battery is at {pct}%. Consider plugging in.",
+                    ToolTipIcon.Warning);
+                // Warning delivered — return to the normal 5-min cadence. The
+                // _lowBatteryWarned guard prevents re-firing until the next cycle.
+                StopLowBatteryFastPoll();
+            }
+        }
+        catch { }
+    }
+
+    private void StartLowBatteryFastPoll()
+    {
+        if (_lowBatteryFastPoll != null) return;   // already running
+        _lowBatteryFastPoll = new System.Windows.Forms.Timer { Interval = 60_000 };
+        _lowBatteryFastPoll.Tick += (_, _) => EvaluateLowBattery();
+        _lowBatteryFastPoll.Start();
+    }
+
+    private void StopLowBatteryFastPoll()
+    {
+        try
+        {
+            _lowBatteryFastPoll?.Stop();
+            _lowBatteryFastPoll?.Dispose();
+        }
+        catch { }
+        _lowBatteryFastPoll = null;
+    }
+
     // ---- Update check (v1.4.0) -----------------------------------------
 
     /// <summary>
@@ -1355,6 +1443,7 @@ internal sealed class TrayAppContext : ApplicationContext
             _themeTimer.Dispose();
             _trimTimer.Stop();
             _trimTimer.Dispose();
+            StopLowBatteryFastPoll();   // dispose the 60s low-battery poll if running
             _hotkeys.Dispose();
             // Variant B watcher (null for variant A users — no-op).
             // Unsubscribe StateChanged first for symmetry with the

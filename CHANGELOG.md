@@ -5,6 +5,29 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.4.2 — 2026-05-25
+
+Adds a configurable low-battery warning. Everything from v1.4.1 (and the
+v1.4.0 feature set) carried forward unchanged.
+
+### Low-battery warning
+
+- New **Settings → General** option: "Warn when battery drops to [10/15/20/
+  25/30]%" with an enable toggle. Default **20%, on**.
+- Fires a toast (*"Battery is at X%. Consider plugging in."*) when battery
+  reaches the threshold **while on battery power**. Once per discharge cycle
+  — resets when you plug in or climb back above the threshold.
+- Independent of Windows' own low-battery notification (which defaults to
+  ~10%), so you get a reliable alert at the level you choose.
+- **Adaptive polling**: normally the battery is checked on the existing
+  5-minute timer (no new continuous polling). When on battery and within
+  5% above the threshold, it temporarily ramps to a 60-second poll for
+  responsiveness near the line, then stands back down after firing.
+  Reading battery status is an OS-cached value (no hardware wake), so the
+  power cost is negligible.
+
+---
+
 ## v1.4.1 — 2026-05-23
 
 Same feature set as the (superseded) v1.4.0 below, plus a critical
