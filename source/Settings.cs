@@ -135,6 +135,18 @@ internal class SettingsModel
     /// <summary>True if calibration reminder fired this cycle (resets on next 100% reach).</summary>
     public bool   CalibrationReminderShown { get; set; }
 
+    // ---- Low-battery warning (v1.4.2+) ---------------------------------
+    //
+    // A user-configurable toast when the battery drops to a threshold while
+    // on battery power. Separate from Windows' own low-battery notification
+    // (which defaults to ~10%); this gives a reliable, app-controlled alert
+    // at a level the user picks. Fires once per discharge cycle.
+
+    /// <summary>Enable the low-battery toast. Default on.</summary>
+    public bool LowBatteryWarnEnabled { get; set; } = true;
+    /// <summary>Battery percent at which to warn (on battery only). Default 20.</summary>
+    public int  LowBatteryWarnPct     { get; set; } = 20;
+
     public static readonly Dictionary<string, HotkeyEntry> Defaults = new()
     {
         // Charging modes
@@ -281,6 +293,18 @@ internal class SettingsModel
                         case "calibration_reminder_shown":  s.CalibrationReminderShown = (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase)); break;
                     }
                 }
+                else if (section == "notifications")
+                {
+                    switch (key.ToLowerInvariant())
+                    {
+                        case "low_battery_warn_enabled":
+                            s.LowBatteryWarnEnabled = (val == "1" || val.Equals("true", StringComparison.OrdinalIgnoreCase));
+                            break;
+                        case "low_battery_warn_pct":
+                            if (int.TryParse(val, out int lp) && lp >= 1 && lp <= 99) s.LowBatteryWarnPct = lp;
+                            break;
+                    }
+                }
             }
 
             // Materialize schedule slots. Prefer new slotN entries; fall back
@@ -404,6 +428,15 @@ internal class SettingsModel
                 AppendIfSet(lines, "latest_known_version",       LatestKnownVersion);
                 AppendIfSet(lines, "last_full_charge_at",        LastFullChargeAt);
                 lines.Add($"calibration_reminder_shown={(CalibrationReminderShown ? 1 : 0)}");
+            }
+            // Emit notifications section only if non-default (disabled, or a
+            // threshold other than 20%). Keeps a fresh settings.ini tidy.
+            if (!LowBatteryWarnEnabled || LowBatteryWarnPct != 20)
+            {
+                lines.Add("");
+                lines.Add("[notifications]");
+                lines.Add($"low_battery_warn_enabled={(LowBatteryWarnEnabled ? 1 : 0)}");
+                lines.Add($"low_battery_warn_pct={LowBatteryWarnPct}");
             }
             // Only emit cache section if we've discovered at least one value;
             // keeps a fresh settings.ini tidy on first launch before any lookup.

@@ -19,6 +19,10 @@ internal class SettingsForm : Form
     // Its initial value reflects the current AutoStart registry state;
     // on Save we install/uninstall accordingly.
     private CheckBox _autoStartCheck = null!;
+    // Low-battery warning (v1.4.2): enable toggle + threshold dropdown.
+    private CheckBox _lowBatteryCheck = null!;
+    private ComboBox _lowBatteryPctCombo = null!;
+    private static readonly int[] LowBatteryChoices = { 10, 15, 20, 25, 30 };
     public Action? Saved { get; set; }
 
     private class Row
@@ -326,6 +330,45 @@ internal class SettingsForm : Form
             Margin = new Padding(0, 0, 0, 12)
         };
         header.Controls.Add(_autoStartCheck);
+
+        // Low-battery warning row: checkbox + threshold dropdown on one line.
+        var lowBattRow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false, Margin = new Padding(0, 0, 0, 12)
+        };
+        _lowBatteryCheck = new CheckBox
+        {
+            Text = "Warn when battery drops to",
+            AutoSize = true,
+            Checked = _model.LowBatteryWarnEnabled,
+            Margin = new Padding(0, 4, 6, 0)
+        };
+        _lowBatteryPctCombo = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Width = 70, Margin = new Padding(0, 2, 6, 0)
+        };
+        foreach (var p in LowBatteryChoices) _lowBatteryPctCombo.Items.Add($"{p}%");
+        // Select the saved threshold (default 20%); fall back to 20% if the
+        // saved value isn't one of the offered choices.
+        int pctIdx = Array.IndexOf(LowBatteryChoices, _model.LowBatteryWarnPct);
+        _lowBatteryPctCombo.SelectedIndex = pctIdx >= 0 ? pctIdx : Array.IndexOf(LowBatteryChoices, 20);
+        var lowBattSuffix = new Label
+        {
+            Text = "(on battery)", AutoSize = true,
+            ForeColor = SystemColors.GrayText, Tag = "gray",
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        // Enable/disable the dropdown with the checkbox.
+        _lowBatteryCheck.CheckedChanged += (_, _) => _lowBatteryPctCombo.Enabled = _lowBatteryCheck.Checked;
+        _lowBatteryPctCombo.Enabled = _lowBatteryCheck.Checked;
+        lowBattRow.Controls.Add(_lowBatteryCheck);
+        lowBattRow.Controls.Add(_lowBatteryPctCombo);
+        lowBattRow.Controls.Add(lowBattSuffix);
+        header.Controls.Add(lowBattRow);
+
         header.Controls.Add(new Label
         {
             Text = "—", AutoSize = true,
@@ -1038,6 +1081,14 @@ internal class SettingsForm : Form
             _autoExitAll.Checked   ? SettingsModel.ScheduleExitMode.AfterAll  :
             _autoExitFirst.Checked ? SettingsModel.ScheduleExitMode.AfterFirst :
                                      SettingsModel.ScheduleExitMode.Stay;
+
+        // Low-battery warning settings.
+        _model.LowBatteryWarnEnabled = _lowBatteryCheck.Checked;
+        if (_lowBatteryPctCombo.SelectedIndex >= 0 &&
+            _lowBatteryPctCombo.SelectedIndex < LowBatteryChoices.Length)
+        {
+            _model.LowBatteryWarnPct = LowBatteryChoices[_lowBatteryPctCombo.SelectedIndex];
+        }
 
         // "Run at Windows login" — apply the registry change directly.
         // (AutoStart state is read from / written to the user's Run key, not
