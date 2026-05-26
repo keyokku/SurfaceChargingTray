@@ -5,9 +5,7 @@
 <video src="https://github.com/keyokku/SurfaceChargingTray/releases/download/v1.2.2/SurfaceChargingTrayv122demo.mp4" controls width="720"></video>
 
 <p align="center">
-  <img width="600" alt="image" src="https://github.com/user-attachments/assets/e5261918-5ffc-4e40-a5ea-ad12815427c4" />
-  <img width="650" alt="image" src="https://github.com/user-attachments/assets/0ec4f9e2-7c92-4573-b6ec-80b1ddfaa302" />
-
+<img width="1000" alt="image" src="https://github.com/user-attachments/assets/0dd3e882-6020-40de-be35-2216b14a2fd2" />
 </p>
 
 
