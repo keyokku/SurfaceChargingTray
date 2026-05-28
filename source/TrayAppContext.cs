@@ -1030,9 +1030,17 @@ internal sealed class TrayAppContext : ApplicationContext
 
     /// <summary>
     /// Evaluates battery level against the user's low-battery threshold.
-    /// On battery + within threshold+5% -> ramp to 60s polling. At/below
-    /// threshold + not yet warned -> fire the toast once, then stand the
-    /// fast poll back down. Plugged in or above the watch zone -> reset.
+    /// Fires the toast based on the battery percentage alone — regardless
+    /// of whether Windows reports the system as plugged in. This is
+    /// deliberate (v1.4.3): the May 16 and May 27 incidents both featured
+    /// PD silently delivering 0 W while PowerLineStatus stayed Online, so
+    /// the previous "on battery only" gate masked the exact failure mode
+    /// the warning should catch. The once-per-cycle guard (reset when pct
+    /// climbs back above watchZone) still prevents spam.
+    ///
+    /// Within threshold+5% -> ramp to 60s polling for responsiveness. At/
+    /// below threshold + not yet warned -> fire the toast once, then stand
+    /// the fast poll back down. Above the watch zone -> reset.
     /// Called from the 5-min trim tick AND from the 60s fast poll.
     /// </summary>
     private void EvaluateLowBattery()
@@ -1055,10 +1063,10 @@ internal sealed class TrayAppContext : ApplicationContext
             int threshold = Math.Clamp(_settings.LowBatteryWarnPct, 1, 99);
             int watchZone = threshold + 5;
 
-            if (!onBattery || pct > watchZone)
+            if (pct > watchZone)
             {
-                // Plugged in, or comfortably above threshold — normal cadence,
-                // and re-arm the once-per-cycle warning for next discharge.
+                // Comfortably above threshold — normal cadence, and re-arm
+                // the once-per-cycle warning for the next descent.
                 _lowBatteryWarned = false;
                 StopLowBatteryFastPoll();
                 return;
@@ -1070,10 +1078,15 @@ internal sealed class TrayAppContext : ApplicationContext
             if (pct <= threshold && !_lowBatteryWarned)
             {
                 _lowBatteryWarned = true;
-                _icon.ShowBalloonTip(10_000,
-                    "Battery low",
-                    $"Battery is at {pct}%. Consider plugging in.",
-                    ToolTipIcon.Warning);
+                // Message adapts to whether Windows thinks the system is on AC.
+                // If it's reported as plugged in but battery is below threshold,
+                // that's the PD-failure signature — point the user at the cable
+                // instead of telling them to plug in (they already did).
+                string msg = onBattery
+                    ? $"Battery is at {pct}%. Consider plugging in."
+                    : $"Battery is at {pct}% even though Windows reports AC connected. " +
+                      $"Charging may not be working — try unplugging and replugging the cable.";
+                _icon.ShowBalloonTip(10_000, "Battery low", msg, ToolTipIcon.Warning);
                 // Warning delivered — return to the normal 5-min cadence. The
                 // _lowBatteryWarned guard prevents re-firing until the next cycle.
                 StopLowBatteryFastPoll();

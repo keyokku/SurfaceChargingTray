@@ -5,6 +5,35 @@ All releases are tagged in git and published as zip bundles on the
 
 ---
 
+## v1.4.3 — 2026-05-27
+
+Background safety improvement to the low-battery warning introduced in
+v1.4.2. No user-visible feature change — the existing setting (threshold
+and enable toggle) is unchanged.
+
+### Bug fix — low-battery warning now plug-state agnostic
+
+The v1.4.2 low-battery warning would only fire while Windows reported the
+system as **on battery**. That gate masked the exact failure mode the
+warning should catch: USB-C PD silently delivering 0 W while
+`PowerLineStatus` stayed `Online` (observed in the May 16 and May 27
+incidents — the battery drains, Windows still reports AC connected, no
+warning fires).
+
+- `EvaluateLowBattery` now fires the toast on battery percentage alone,
+  regardless of `PowerLineStatus`. The once-per-cycle guard (reset when
+  battery climbs back above threshold+5%) still prevents spam.
+- The toast message adapts to the reported AC state. If on battery, it
+  says "Consider plugging in." If AC is reported but battery is still
+  below the threshold, it says "Battery is at X% even though Windows
+  reports AC connected. Charging may not be working — try unplugging and
+  replugging the cable." — directing the user at the actual problem.
+
+Same threshold, same setting, same adaptive 5-min / 60s polling. Purely a
+correctness fix on the trigger condition.
+
+---
+
 ## v1.4.2 — 2026-05-25
 
 Adds a configurable low-battery warning. Everything from v1.4.1 (and the
